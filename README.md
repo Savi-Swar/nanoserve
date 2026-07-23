@@ -19,10 +19,11 @@ TTFT stays roughly flat.
 
 On a **T4 (fp16)**, continuous batching does **9.6x** naive throughput (265.8 vs
 27.8 tok/s) at a p99 TTFT of 2.2s vs naive's 53s, reaching **16% of vLLM** (1,700
-tok/s) with no custom CUDA kernels. Paged runs slower than continuous here
-(108.7 tok/s) because its per-step block gather is pure Python — its win is
-deterministic memory capacity, not raw speed (see below). Full GPU table and the
-honest caveats in [docs/writeup.md](docs/writeup.md#gpu-results-fp16-t4).
+tok/s) with no custom CUDA kernels. Paged measured slower (108.7 tok/s) but that
+run's block gather was a pure-Python loop — since vectorized (`index_select` over
+a flattened block table, still token-exact), so that number is being re-measured;
+paged's deterministic win is memory capacity, not raw speed. Full GPU table and
+caveats in [docs/writeup.md](docs/writeup.md#gpu-results-fp16-t4).
 
 The CPU dev-box numbers below show the same relative ladder (device-independent):
 

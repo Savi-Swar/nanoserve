@@ -3,16 +3,20 @@ gathered into a contiguous cache each decode step and scattered back after.
 
 This is the real thing, not accounting: KV bytes are stored in fixed blocks
 drawn from a free list (server/paged_cache.py), and attention runs over KV
-reassembled from a per-sequence block table. The per-step gather is the extra
-HBM round-trip that real PagedAttention pays (~5-10%); here it buys demand-
-paged memory and admission control instead of reserving contiguous space.
+reassembled from a per-sequence block table.
 
-To keep decode OOM-free without a preemption/recompute loop, a sequence
-reserves its whole potential span (prompt + max_tokens) in *block* granularity
-at admission — far tighter than reserving the model's max context, and the
-engine's admission control refuses a request the pool can't currently hold
-(backpressure). The scheduling story (continuous admit/evict) is identical to
-the contiguous engine; only the memory substrate changes.
+The gather/scatter is **vectorized**: a sequence's block table + position maps
+to a linear slot (block * block_size + offset), so gathering the whole batch is
+one `index_select` per layer instead of a Python loop over sequences and
+blocks. That matters — with the naive per-block loop, at GPU speeds the serial
+Python copy dominates and makes paging look artificially slow. With the slot-
+table gather, the paged-vs-contiguous comparison is about paging itself.
+
+To keep decode OOM-free without a preemption/recompute loop, a sequence reserves
+its whole potential span (prompt + max_tokens) in *block* granularity at
+admission; the engine's admission control refuses a request the pool can't hold
+(backpressure). Scheduling (continuous admit/evict) is identical to the
+contiguous engine; only the memory substrate changes.
 
 Verified token-for-token against naive decoding by the equivalence oracle.
 """
@@ -23,15 +27,16 @@ import time
 import torch
 from transformers import DynamicCache
 
-from .batched import _lpad_T, _lpad_1, _sample_batch
+from .batched import _sample_batch
 from .model import ModelRunner
-from .paged_cache import BlockAllocator, OutOfBlocks
+from .paged_cache import BlockAllocator
 from .request import Request
 
 
 class PagedKVStore:
     """Global block pool: per layer, key/value tensors of shape
-    [num_blocks, n_kv_heads, block_size, head_dim]."""
+    [num_blocks, block_size, n_kv_heads, head_dim]. A token at (block b,
+    offset o) lives at linear slot b*block_size + o in the flattened pool."""
 
     def __init__(self, model: ModelRunner, num_blocks: int, block_size: int):
         cfg = model.model.config
@@ -40,43 +45,57 @@ class PagedKVStore:
         self.head_dim = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
         self.block_size = block_size
         self.num_blocks = num_blocks
+        self.n_slots = num_blocks * block_size
         dev, dt = model.device, model.dtype
-        shape = (num_blocks, self.n_kv, block_size, self.head_dim)
+        shape = (num_blocks, block_size, self.n_kv, self.head_dim)
         self.key = [torch.zeros(shape, device=dev, dtype=dt) for _ in range(self.n_layers)]
         self.val = [torch.zeros(shape, device=dev, dtype=dt) for _ in range(self.n_layers)]
 
-    def write_range(self, table: list[int], start: int, k_layers, v_layers, length: int):
-        """Write `length` contiguous tokens starting at position `start` for one
-        sequence. k_layers[li]/v_layers[li] are [n_kv, length, head_dim]."""
-        bs = self.block_size
-        pos = 0
-        while pos < length:
-            tok = start + pos
-            blk = table[tok // bs]
-            off = tok % bs
-            cnt = min(bs - off, length - pos)
-            for li in range(self.n_layers):
-                self.key[li][blk, :, off:off + cnt, :] = k_layers[li][:, pos:pos + cnt, :]
-                self.val[li][blk, :, off:off + cnt, :] = v_layers[li][:, pos:pos + cnt, :]
-            pos += cnt
+    def _flat(self, t):  # [num_blocks, block_size, n_kv, head_dim] -> [n_slots, n_kv, head_dim]
+        return t.view(self.n_slots, self.n_kv, self.head_dim)
 
-    def gather(self, table: list[int], length: int):
-        """Read tokens [0, length) for one sequence -> (k_layers, v_layers),
-        each [n_kv, length, head_dim]."""
-        bs = self.block_size
-        kout = [torch.empty(self.n_kv, length, self.head_dim, device=self.key[0].device,
-                            dtype=self.key[0].dtype) for _ in range(self.n_layers)]
-        vout = [torch.empty_like(kout[li]) for li in range(self.n_layers)]
-        pos = 0
-        while pos < length:
-            blk = table[pos // bs]
-            off = pos % bs
-            cnt = min(bs - off, length - pos)
-            for li in range(self.n_layers):
-                kout[li][:, pos:pos + cnt, :] = self.key[li][blk, :, off:off + cnt, :]
-                vout[li][:, pos:pos + cnt, :] = self.val[li][blk, :, off:off + cnt, :]
-            pos += cnt
-        return kout, vout
+    def _slots(self, table: list[int], start: int, length: int, dev) -> torch.Tensor:
+        """Linear slot index for positions [start, start+length) of one seq."""
+        pos = torch.arange(start, start + length, device=dev)
+        tbl = torch.tensor(table, device=dev, dtype=torch.long)
+        return tbl[pos // self.block_size] * self.block_size + (pos % self.block_size)
+
+    def write_range(self, table: list[int], start: int, k_layers, v_layers, length: int):
+        """Write `length` contiguous tokens (k_layers[li]/v_layers[li] are
+        [n_kv, length, head_dim]) starting at position `start`."""
+        dev = self.key[0].device
+        slots = self._slots(table, start, length, dev)
+        for li in range(self.n_layers):
+            self._flat(self.key[li]).index_copy_(0, slots, k_layers[li].permute(1, 0, 2).contiguous())
+            self._flat(self.val[li]).index_copy_(0, slots, v_layers[li].permute(1, 0, 2).contiguous())
+
+    def write_tokens(self, slots: torch.Tensor, k_last, v_last):
+        """Scatter one new token per row. k_last[li]/v_last[li] are
+        [B, n_kv, head_dim]; slots is [B] (one linear slot per row)."""
+        for li in range(self.n_layers):
+            self._flat(self.key[li]).index_copy_(0, slots, k_last[li])
+            self._flat(self.val[li]).index_copy_(0, slots, v_last[li])
+
+    def gather_batch(self, tables, lengths, T_max):
+        """Left-padded KV for the whole batch. Returns (keys, values, mask)
+        where keys[li]/values[li] are [B, n_kv, T_max, head_dim]. One
+        index_select per layer — no Python loop over blocks."""
+        dev = self.key[0].device
+        B = len(tables)
+        slot_idx = torch.zeros(B, T_max, dtype=torch.long, device=dev)
+        mask = torch.zeros(B, T_max, dtype=torch.long, device=dev)
+        for i, (table, L) in enumerate(zip(tables, lengths)):
+            pad = T_max - L
+            slot_idx[i, pad:] = self._slots(table, 0, L, dev)
+            mask[i, pad:] = 1
+        flat_idx = slot_idx.reshape(-1)
+        keys, vals = [], []
+        for li in range(self.n_layers):
+            k = self._flat(self.key[li]).index_select(0, flat_idx)
+            v = self._flat(self.val[li]).index_select(0, flat_idx)
+            keys.append(k.view(B, T_max, self.n_kv, self.head_dim).permute(0, 2, 1, 3).contiguous())
+            vals.append(v.view(B, T_max, self.n_kv, self.head_dim).permute(0, 2, 1, 3).contiguous())
+        return keys, vals, mask
 
 
 class PagedBatchState:
@@ -89,9 +108,9 @@ class PagedBatchState:
         self.alloc = BlockAllocator(num_blocks, block_size)
         self.block_size = block_size
         self.reqs: list[Request] = []
-        self.sids: list[int] = []          # allocator seq-id per row
-        self.true_len: list[int] = []      # tokens written per row
-        self.last_tok: list[int] = []      # next token to feed per row
+        self.sids: list[int] = []
+        self.true_len: list[int] = []
+        self.last_tok: list[int] = []
         self.active: list[bool] = []
         self._next_sid = 0
 
@@ -140,7 +159,6 @@ class PagedBatchState:
             padn = Lp - L
             sid = self._next_sid
             self._next_sid += 1
-            # reserve the whole potential span in blocks; write the prompt now
             self.alloc.add_seq(sid, r.prompt_len + r.sampling.max_tokens)
             table = self.alloc.tables[sid]
             k_layers = [gcache.layers[li].keys[j, :, padn:, :] for li in range(self.store.n_layers)]
@@ -152,8 +170,8 @@ class PagedBatchState:
             r.first_token_time = t
             self.reqs.append(r)
             self.sids.append(sid)
-            self.true_len.append(L)          # prompt written; the sampled token
-            self.last_tok.append(tok)        # will be written on its decode step
+            self.true_len.append(L)
+            self.last_tok.append(tok)
             self.active.append(True)
 
     # --- one decode iteration ------------------------------------------
@@ -162,24 +180,13 @@ class PagedBatchState:
         dev = self.m.device
         B = self.size
         T_max = max(self.true_len)
+        bs = self.block_size
 
-        # gather every row's KV from blocks into a left-padded contiguous cache
-        keys_by_layer = [[] for _ in range(self.store.n_layers)]
-        vals_by_layer = [[] for _ in range(self.store.n_layers)]
-        mask = torch.zeros(B, T_max, device=dev, dtype=torch.long)
-        for i in range(B):
-            L = self.true_len[i]
-            k_layers, v_layers = self.store.gather(self.alloc.tables[self.sids[i]], L)
-            pad = T_max - L
-            mask[i, pad:] = 1
-            for li in range(self.store.n_layers):
-                keys_by_layer[li].append(_lpad_T(k_layers[li].unsqueeze(0), pad))
-                vals_by_layer[li].append(_lpad_T(v_layers[li].unsqueeze(0), pad))
-        # populate a fresh cache via the stable update() API (no internal classes)
+        tables = [self.alloc.tables[self.sids[i]] for i in range(B)]
+        keys, vals, mask = self.store.gather_batch(tables, self.true_len, T_max)
         cache = DynamicCache()
         for li in range(self.store.n_layers):
-            cache.update(torch.cat(keys_by_layer[li], dim=0),
-                         torch.cat(vals_by_layer[li], dim=0), li)
+            cache.update(keys[li], vals[li], li)
 
         last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
         pos = torch.tensor(self.true_len, device=dev).unsqueeze(1)
@@ -192,15 +199,17 @@ class PagedBatchState:
             use_cache=True,
             cache_position=torch.tensor([T_max], device=dev),
         )
-        # extract the just-appended token's KV (last column) and scatter to blocks
+        # scatter the just-appended token's KV back to each row's next slot
         new_cache = out.past_key_values
+        slots = torch.tensor(
+            [tables[i][self.true_len[i] // bs] * bs + self.true_len[i] % bs for i in range(B)],
+            device=dev, dtype=torch.long,
+        )
+        k_last = [new_cache.layers[li].keys[:, :, -1, :] for li in range(self.store.n_layers)]
+        v_last = [new_cache.layers[li].values[:, :, -1, :] for li in range(self.store.n_layers)]
+        self.store.write_tokens(slots, k_last, v_last)
         for i in range(B):
-            L = self.true_len[i]
-            table = self.alloc.tables[self.sids[i]]
-            k_layers = [new_cache.layers[li].keys[i, :, -1:, :] for li in range(self.store.n_layers)]
-            v_layers = [new_cache.layers[li].values[i, :, -1:, :] for li in range(self.store.n_layers)]
-            self.store.write_range(table, L, k_layers, v_layers, 1)
-            self.true_len[i] = L + 1
+            self.true_len[i] += 1
 
         nxt = _sample_batch(out.logits[:, -1, :], self.reqs)
         self.m.sync()

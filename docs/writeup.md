@@ -80,12 +80,17 @@ TTFT tail to ~2 s while naive's open-loop queue blows past 50 s.
 
 Two honest things this run surfaced:
 
-- **Paged is slower than continuous here (108.7 vs 265.8), not faster.** That's
-  the real cost of my paged execution: the per-step block gather is a pure-Python
-  loop, and at GPU speeds that serial gather becomes the bottleneck. This is
-  exactly why production systems write a CUDA PagedAttention kernel (out of scope
-  here). Paged's win is deterministic *memory capacity* (below), not raw speed on
-  this workload — the earlier CPU framing holds, just more sharply.
+- **Paged measured slower than continuous (108.7 vs 265.8) — but that number is
+  confounded by my own code, and I've since fixed it.** In that run the per-step
+  block gather was a pure-Python loop over sequences and blocks; at GPU speeds
+  that serial copy *is* the bottleneck, not paging. It's now vectorized (one
+  `index_select` per layer over a flattened block table, still token-exact —
+  `server/paged_exec.py`), so 108.7 is a measurement of my for-loop, not of paged
+  attention. Re-running the sweep to isolate the real gap is the honest next step:
+  if paged is still slower, the claim is now about paging; if it's competitive,
+  that's a fifth self-corrected number. Either way it beats the confounded result.
+  Paged's deterministic win — memory capacity, 3x concurrency (below) — holds
+  regardless of the speed question.
 - **nanoserve's best is ~16% of vLLM** (continuous 265.8 vs vLLM 1,700.7 tok/s on
   the same T4). Reaching a sixth of vLLM with masked SDPA and no custom kernels is
   a defensible number; the 6x gap is the fused FlashAttention/PagedAttention
