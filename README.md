@@ -11,6 +11,9 @@ run all cells (details in [docs/gpu_run.md](docs/gpu_run.md)).
 
 ![throughput vs load](results/throughput_vs_rate.png)
 
+*(CPU dev box — the shape is the point: continuous scales with load, the others
+flatten. The fp16 T4 numbers are just below.)*
+
 Under continuous batching, throughput goes up as offered load increases while
 TTFT stays roughly flat.
 
