@@ -97,6 +97,16 @@ def write_summary(ok):
                          f"vs paged {cap.get('paged')}")
         lines.append("")
 
+    gp = _load("results/goodput.json")
+    if gp and gp.get("runs"):
+        caps = {e: max(x["goodput_qps"] for x in r) for e, r in gp["runs"].items()}
+        lines.append(f"goodput req/s (SLO {gp['ttft_slo_ms']:.0f}ms TTFT / {gp['tpot_slo_ms']:.0f}ms TPOT): "
+                     + ", ".join(f"{e} {c:.1f}" for e, c in caps.items()))
+        if caps.get("naive"):
+            best = max(caps, key=caps.get)
+            lines.append(f"  {best} sustains {caps[best] / caps['naive']:.1f}x naive's goodput under SLO")
+        lines.append("")
+
     for name, path in [("spec", "results/spec.json"), ("prefix", "results/prefix.json"),
                        ("kv_quant", "results/kv_quant.json")]:
         d = _load(path)
@@ -140,6 +150,12 @@ def main():
     ok["spec"] = step("audit: speculative decoding", ["bench.spec_study", "--device", DEV])
     ok["prefix"] = step("audit: prefix caching", ["bench.prefix_study", "--device", DEV])
     ok["kvquant"] = step("audit: KV quantization", ["bench.kv_quant_study", "--device", DEV])
+
+    # 4b. goodput under an SLO (req/s meeting both TTFT and TPOT targets)
+    ok["goodput"] = step("goodput under SLO (500ms TTFT / 50ms TPOT)", [
+        "bench.goodput_study", "--engines", "naive", "static", "continuous", "paged",
+        "--rates", "4", "8", "16", "--n", "32", "--max-tokens", "48",
+        "--ttft-slo", "500", "--tpot-slo", "50", "--device", DEV])
 
     # 5. low-noise paged-vs-continuous (the comparison CPU noise couldn't resolve)
     ok["noise"] = step("noise-floor: continuous vs paged (5 runs)", [

@@ -16,6 +16,7 @@ results/trace.json
 results/spec.json
 results/prefix.json
 results/kv_quant.json
+results/goodput.json
 
 # large external dataset (fetch via data/README.md)
 data/*.csv

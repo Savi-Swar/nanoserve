@@ -59,3 +59,15 @@ class Request:
         gen = self.finish_time - self.first_token_time
         n = self.num_output - 1
         return n / gen if gen > 0 and n > 0 else 0.0
+
+    @property
+    def tpot(self) -> float:
+        """Time per output token (seconds) — the inter-token latency a user
+        feels once streaming starts. The p99 of this is a standard SLO."""
+        gen = self.finish_time - self.first_token_time
+        n = self.num_output - 1
+        return gen / n if n > 0 else 0.0
+
+    def meets_slo(self, ttft_s: float, tpot_s: float) -> bool:
+        return (self.finish_time is not None
+                and self.ttft <= ttft_s and self.tpot <= tpot_s)

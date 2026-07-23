@@ -96,6 +96,28 @@ Two honest things this run surfaced:
   a defensible number; the 6x gap is the fused FlashAttention/PagedAttention
   kernels vLLM has and I don't.
 
+## Goodput (the metric that actually matters)
+
+Peak tok/s is vanity: a server can post big throughput while most requests miss
+their latency target. Goodput counts only requests meeting *both* a TTFT and a
+TPOT (per-output-token) SLO, in req/s (`bench/goodput_study.py`). Under a
+1s-TTFT / 150ms-TPOT SLO (CPU, illustrative — GPU uses tighter SLOs):
+
+| engine | goodput @ low load | @ high load | sustainable capacity |
+|---|---|---|---|
+| naive | 0.3 | 0.3 | 0.3 req/s |
+| static | 1.4 | 0.9 | 1.4 req/s |
+| continuous | 2.5 | 4.0 | **4.0 req/s** |
+| paged | 2.5 | 3.6 | 3.6 req/s |
+
+Continuous sustains **15x the goodput of naive** under the SLO — a sharper and
+more honest number than "9.6x peak throughput," because it captures that naive
+doesn't just run slower, it misses the latency target on nearly every request
+once the queue builds. Goodput *rises* with load for continuous (more to batch)
+and *falls* for naive and static (the queue outruns the SLO). That shape, in the
+metric vLLM/DistServe actually optimize, is the whole argument for iteration-level
+scheduling in one table.
+
 ## Paged KV fragmentation
 
 Fragmentation on 64 length-skewed sequences, 16-token blocks (`bench.memory_study`):

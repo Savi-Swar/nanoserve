@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline spec prefix kvquant noise audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline spec prefix kvquant goodput noise audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -22,6 +22,7 @@ help:
 	@echo "  spec       audit row 1: speculative decoding tokens/forward -> results/spec.json"
 	@echo "  prefix     audit row 2: prefix caching prefill savings -> results/prefix.json"
 	@echo "  kvquant    audit row 3: KV quantization memory/quality -> results/kv_quant.json"
+	@echo "  goodput    req/s meeting a TTFT+TPOT SLO, per engine -> results/goodput.json"
 	@echo "  audit      run the whole audit (spec + prefix + kvquant)"
 	@echo "  noise      noise-floor compare of two engines (N runs, 95% CI)"
 	@echo "  all        memory + bench + plot (every artifact in one command)"
@@ -61,6 +62,9 @@ prefix:
 
 kvquant:
 	python -m bench.kv_quant_study
+
+goodput:
+	python -m bench.goodput_study --rates 2 4 8 16 --n 48 --device $(DEVICE)
 
 audit: spec prefix kvquant
 

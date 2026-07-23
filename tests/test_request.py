@@ -50,3 +50,15 @@ def test_num_output_empty():
 
 def test_sampling_greedy_flag():
     assert make_request().sampling.greedy is True
+
+
+def test_tpot_and_meets_slo():
+    r = make_request()
+    r.arrival_time = 0.0
+    r.first_token_time = 0.2       # TTFT = 200 ms
+    r.finish_time = 0.6            # 4 decode intervals over 0.4s -> 100 ms/token
+    r.output_tokens = [1, 2, 3, 4, 5]
+    assert r.tpot == pytest.approx(0.1)          # 0.4s / 4 tokens
+    assert r.meets_slo(ttft_s=0.5, tpot_s=0.15)  # both under SLO
+    assert not r.meets_slo(ttft_s=0.1, tpot_s=0.15)  # TTFT over
+    assert not r.meets_slo(ttft_s=0.5, tpot_s=0.05)  # TPOT over
