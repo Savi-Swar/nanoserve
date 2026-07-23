@@ -5,10 +5,9 @@ scheduler and KV-cache memory manager are written by hand in Python/PyTorch with
 no custom CUDA. Every throughput step is a scheduling decision, measured on the
 same open-loop workload.
 
-> The numbers below are from a CPU dev box (fp32) unless noted. The GPU column
-> (fp16, CUDA) is filled in from one clean run and is where absolute tok/s and
-> the vLLM reference ceiling live. The relative ladder between engines doesn't
-> depend on the device, and that's the part I care about.
+> Most tables below are from a CPU dev box (fp32). The absolute fp16 numbers and
+> the vLLM ceiling come from one clean run on a T4 (see "GPU results" below). The
+> relative ladder between engines is the part I care about, and it holds on both.
 
 ## Method
 
@@ -62,6 +61,35 @@ might get, and padding to the batch's current longest each step. A paged cache
 (vLLM/PagedAttention, SOSP'23) stores KV in fixed blocks from a free list; a
 sequence holds a block table and grows on demand. The only waste is the
 partially-filled last block (under block_size per sequence).
+
+## GPU results (fp16, T4)
+
+One clean run on a Kaggle T4 (`scripts/gpu_run.py`), fp16, peak throughput per
+engine across the rate sweep:
+
+| engine | throughput | TTFT p99 |
+|---|---|---|
+| naive | 27.8 tok/s | 53,390 ms |
+| static | 137.5 tok/s | 8,029 ms |
+| continuous | **265.8 tok/s** | **2,175 ms** |
+| paged | 108.7 tok/s | 7,871 ms |
+
+Continuous batching is **9.6x** naive throughput on the GPU (a bigger jump than
+on CPU, because GPU batching parallelism is much stronger), and it holds the
+TTFT tail to ~2 s while naive's open-loop queue blows past 50 s.
+
+Two honest things this run surfaced:
+
+- **Paged is slower than continuous here (108.7 vs 265.8), not faster.** That's
+  the real cost of my paged execution: the per-step block gather is a pure-Python
+  loop, and at GPU speeds that serial gather becomes the bottleneck. This is
+  exactly why production systems write a CUDA PagedAttention kernel (out of scope
+  here). Paged's win is deterministic *memory capacity* (below), not raw speed on
+  this workload — the earlier CPU framing holds, just more sharply.
+- **nanoserve's best is ~16% of vLLM** (continuous 265.8 vs vLLM 1,700.7 tok/s on
+  the same T4). Reaching a sixth of vLLM with masked SDPA and no custom kernels is
+  a defensible number; the 6x gap is the fused FlashAttention/PagedAttention
+  kernels vLLM has and I don't.
 
 ## Paged KV fragmentation
 
@@ -245,15 +273,17 @@ Background in `docs/frontier/`. These are left out on purpose, not missed:
 ## Reference ceiling
 
 `bench/vllm_ref.py` runs the same open-loop workload through vLLM's
-AsyncLLMEngine. It's the ceiling to compare against; nanoserve targets a
-defensible fraction of vLLM throughput on the same hardware, with the gap coming
-from the fused FlashAttention/PagedAttention kernels I don't write.
+AsyncLLMEngine. On the T4, vLLM does 1,700.7 tok/s vs nanoserve's best of 265.8
+(continuous), so nanoserve reaches **16% of vLLM**. That gap is the fused
+FlashAttention/PagedAttention kernels vLLM has and I don't; 1/6th of a
+production engine with masked SDPA and pure-Python scheduling is the honest
+result, and closing it would mean writing the kernel (out of scope).
 
-## Résumé bullets (draft, GPU numbers pending)
+## Résumé bullets
 
 - Built an LLM inference server from scratch (Python/PyTorch, no custom CUDA):
-  naive to static to continuous batching to a paged KV cache, __x throughput over
-  naive at p99 TTFT __ ms, reaching __% of vLLM on the same hardware.
+  naive to static to continuous batching to a paged KV cache, 9.6x throughput
+  over naive at p99 TTFT 2.2s (from 53s), reaching 16% of vLLM on the same T4.
 - Audited published inference optimizations in a controlled rig, measuring
   against a documented +/-24% noise floor and verifying each one token-exact
   first. Found speculative decoding's speedup is workload-dependent (2.7x on
