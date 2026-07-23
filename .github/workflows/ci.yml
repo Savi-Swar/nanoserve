@@ -1,0 +1,59 @@
+name: CI
+
+# Run on every push and pull request.
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast test suite. RUN_SLOW is left unset, so the equivalence tests that load
+  # the ~1 GB model (tests/test_equivalence.py) skip themselves — CI stays quick
+  # and needs no GPU.
+  # ---------------------------------------------------------------------------
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip                       # cache the pip download/wheel cache
+
+      - name: Install dependencies
+        # requirements.txt pulls in torch (CPU wheel on ubuntu-latest) +
+        # transformers; the fast tests import torch, so we install the full set.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run fast tests
+        # RUN_SLOW unset -> equivalence oracle skips (no model download).
+        run: python -m pytest -q
+
+  # ---------------------------------------------------------------------------
+  # Performance-regression gate. Runs the deterministic, no-model proxy in
+  # bench/regression.py against the committed results/baseline.json and fails
+  # the build if fragmentation, paged capacity, or allocator throughput
+  # regresses beyond threshold. No GPU, no model download.
+  # ---------------------------------------------------------------------------
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Perf regression gate
+        run: python -m bench.regression --check

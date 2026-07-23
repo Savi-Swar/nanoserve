@@ -1,0 +1,15 @@
+# Keep the build context small and deterministic.
+.git
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+
+# Generated artifacts — the container regenerates these into the bind-mounted
+# results/ dir, so there's no reason to ship stale copies into the image.
+results/*.png
+results/*.json
+*.json
+
+# docs/ is intentionally NOT ignored: it's small and useful to have inside the
+# image (research.md, writeup.md, frontier/).

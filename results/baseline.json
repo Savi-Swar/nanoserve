@@ -1,0 +1,16 @@
+{
+  "paged_frag": 0.04035659509202454,
+  "paged_capacity": 128,
+  "alloc_ops_per_sec": 6901576.380617297,
+  "config": {
+    "n_seqs": 64,
+    "block_size": 16,
+    "max_len": 512,
+    "mean_out": 128,
+    "bytes_per_token": 12288,
+    "budget_mib": 256,
+    "seed": 0,
+    "micro_ops": 200000,
+    "micro_repeats": 5
+  }
+}

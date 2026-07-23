@@ -1,0 +1,5 @@
+torch>=2.6
+transformers>=5.0
+matplotlib>=3.8
+pytest>=8.0
+# vllm  -> install only on a Linux/CUDA box for the reference-ceiling benchmark

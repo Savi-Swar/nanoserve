@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# generated artifacts (reproduce with `make all` / `make trace`)
+results/*.png
+results/sweep.json
+results/memory.json
+results/trace.json
+results/spec.json
+results/prefix.json
+results/kv_quant.json
+
+# large external dataset (fetch via data/README.md)
+data/*.csv
+
+# keep the committed perf baseline
+!results/baseline.json
