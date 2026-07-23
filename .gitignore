@@ -5,6 +5,11 @@ __pycache__/
 
 # generated artifacts (reproduce with `make all` / `make trace`)
 results/*.png
+# ...but keep the graphs the README embeds
+!results/throughput_vs_rate.png
+!results/ttft_p99_by_engine.png
+!results/throughput_by_engine.png
+!results/latency_throughput.png
 results/sweep.json
 results/memory.json
 results/trace.json
