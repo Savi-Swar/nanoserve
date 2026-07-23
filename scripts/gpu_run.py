@@ -186,20 +186,21 @@ def main():
         "bench.repeat", "--compare", "continuous", "paged", "--runs", "5",
         "--rate", "16", "--n", "48", "--device", DEV])
 
-    # 6. vLLM reference ceiling (needs vLLM; hard timeout since init can hang)
-    ok["vllm"] = step("vLLM reference ceiling", [
-        "bench.vllm_ref", "--n", "48", "--rate", "16", "--out", "results/vllm.json"],
+    # 6. roofline crossover: does the predicted crossover batch match measurement?
+    # (run BEFORE vLLM — vLLM's EngineCore lingers on GPU memory and would OOM this)
+    ok["crossover"] = step("roofline crossover (predicted vs measured batch)", [
+        "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
+        "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320"],
         timeout=600)
 
-    # 7. roofline overlay (T4 presets; override for your GPU)
+    # 7. roofline overlay (analytical; T4 presets; override for your GPU)
     ok["roofline"] = step("roofline: predicted vs measured", [
         "bench.roofline", "--mem-bandwidth-gbps", "320", "--peak-tflops", "65",
         "--measured", "results/sweep.json"])
 
-    # 8. roofline crossover: does the predicted crossover batch match measurement?
-    ok["crossover"] = step("roofline crossover (predicted vs measured batch)", [
-        "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
-        "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320"],
+    # 8. vLLM reference ceiling LAST — its EngineCore can hold GPU memory after it
+    ok["vllm"] = step("vLLM reference ceiling", [
+        "bench.vllm_ref", "--n", "48", "--rate", "16", "--out", "results/vllm.json"],
         timeout=600)
 
     print("\n" + "#" * 70)

@@ -69,53 +69,53 @@ engine across the rate sweep:
 
 | engine | throughput | TTFT p99 |
 |---|---|---|
-| naive | 27.8 tok/s | 53,390 ms |
-| static | 137.5 tok/s | 8,029 ms |
-| continuous | **265.8 tok/s** | **2,175 ms** |
-| paged | 108.7 tok/s | 7,871 ms |
+| naive | 29.1 tok/s | 52,430 ms |
+| static | 142.9 tok/s | 7,672 ms |
+| continuous | **278.5 tok/s** | **2,012 ms** |
+| paged | 237.2 tok/s | 2,628 ms |
 
 Continuous batching is **9.6x** naive throughput on the GPU (a bigger jump than
 on CPU, because GPU batching parallelism is much stronger), and it holds the
 TTFT tail to ~2 s while naive's open-loop queue blows past 50 s.
 
-Two honest things this run surfaced:
+Two things this run resolved:
 
-- **Paged measured slower than continuous (108.7 vs 265.8) — but that number is
-  confounded by my own code, and I've since fixed it.** In that run the per-step
-  block gather was a pure-Python loop over sequences and blocks; at GPU speeds
-  that serial copy *is* the bottleneck, not paging. It's now vectorized (one
-  `index_select` per layer over a flattened block table, still token-exact —
-  `server/paged_exec.py`), so 108.7 is a measurement of my for-loop, not of paged
-  attention. Re-running the sweep to isolate the real gap is the honest next step:
-  if paged is still slower, the claim is now about paging; if it's competitive,
-  that's a fifth self-corrected number. Either way it beats the confounded result.
-  Paged's deterministic win — memory capacity, 3x concurrency (below) — holds
-  regardless of the speed question.
-- **nanoserve's best is ~16% of vLLM** (continuous 265.8 vs vLLM 1,700.7 tok/s on
-  the same T4). Reaching a sixth of vLLM with masked SDPA and no custom kernels is
-  a defensible number; the 6x gap is the fused FlashAttention/PagedAttention
-  kernels vLLM has and I don't.
+- **The paged speed question, now un-confounded.** The first GPU run measured
+  paged at 108.7 tok/s, but that used a pure-Python per-block gather loop — at GPU
+  speeds the serial copy, not paging, was the bottleneck. After vectorizing the
+  gather (one `index_select` per layer over a flattened block table, still
+  token-exact), paged jumps to 237.2, and a 5-run noise-floor comparison
+  (`bench/repeat.py`) puts it at **−16.3% vs continuous, past the ±5% floor →
+  DISTINGUISHABLE.** So the honest answer survives the confound-kill: paged is
+  genuinely ~16% slower than the contiguous engine even done right, because the
+  per-step block gather is a real (now cheap, but nonzero) cost. Paged's win is
+  memory capacity (3x concurrency, below), not speed — confirmed cleanly, not
+  assumed. The vectorization mattered (108.7 → 237.2); the finding didn't change.
+- **nanoserve's best is 16% of vLLM** (continuous 278.5 vs vLLM 1,708.7 tok/s on
+  the same T4). A sixth of a production engine with masked SDPA and no custom
+  kernels is a defensible number; the ~6x gap is the fused FlashAttention /
+  PagedAttention kernels vLLM has and I don't.
 
 ## Goodput (the metric that actually matters)
 
 Peak tok/s is vanity: a server can post big throughput while most requests miss
 their latency target. Goodput counts only requests meeting *both* a TTFT and a
-TPOT (per-output-token) SLO, in req/s (`bench/goodput_study.py`). Under a
-1s-TTFT / 150ms-TPOT SLO (CPU, illustrative — GPU uses tighter SLOs):
+TPOT (per-output-token) SLO, in req/s (`bench/goodput_study.py`). On the T4 under
+a strict **500ms-TTFT / 50ms-TPOT** SLO, sustainable goodput per engine:
 
-| engine | goodput @ low load | @ high load | sustainable capacity |
-|---|---|---|---|
-| naive | 0.3 | 0.3 | 0.3 req/s |
-| static | 1.4 | 0.9 | 1.4 req/s |
-| continuous | 2.5 | 4.0 | **4.0 req/s** |
-| paged | 2.5 | 3.6 | 3.6 req/s |
+| engine | goodput (req/s under SLO) |
+|---|---|
+| naive | **~0** (misses the SLO on essentially every request) |
+| static | 0.5 |
+| continuous | **3.9** |
+| paged | 3.1 |
 
-Continuous sustains **15x the goodput of naive** under the SLO — a sharper and
+Continuous sustains **~200x the goodput of naive** under this SLO — a sharper and
 more honest number than "9.6x peak throughput," because it captures that naive
-doesn't just run slower, it misses the latency target on nearly every request
-once the queue builds. Goodput *rises* with load for continuous (more to batch)
-and *falls* for naive and static (the queue outruns the SLO). That shape, in the
-metric vLLM/DistServe actually optimize, is the whole argument for iteration-level
+doesn't just run slower, it blows the latency target on *nearly every request*
+once the queue builds (its p99 TTFT is 50+ seconds). Goodput *rises* with load
+for continuous and collapses for naive and static. That shape, in the metric
+vLLM/DistServe actually optimize, is the whole argument for iteration-level
 scheduling in one table.
 
 ## Paged KV fragmentation
@@ -314,26 +314,27 @@ draft acceptance and `B*` the roofline crossover (≈39). So: generic prose
 **batch ≥ 37**.
 
 **The measurement** (`bench/spec_batched_study.py`, spec_cont vs plain
-continuous, CPU — GPU sharpens the compute-bound regime):
+continuous, fp16 T4 — spec/continuous throughput ratio):
 
 | batch | generic (spec/cont) | grounded (spec/cont) |
 |---|---|---|
-| 1 | 1.00 | 3.1x |
-| 2 | 1.13 | 4.3x |
-| 4 | **0.81** | 3.8x |
-| 8 | 0.98 | 4.3x |
+| 1 | 0.97 | 4.8x |
+| 2 | **0.93** | 5.3x |
+| 4 | 0.83 | 5.2x |
+| 8 | 0.72 | 4.4x |
+| 16 | 0.57 | 3.4x |
+| 32 | **0.40** | 2.3x |
 
-The measurement matches the model: on **generic conversational prose speculation
-is a wash-to-loss the moment you batch**, while on **grounded/repetitive traffic
-it's a 3-4x win that survives batching**. The consequence for the field: the
-"2.7x speculative decoding" number that gets quoted is a **batch-1, grounded-
-workload** number. On a batched server serving generic chat — the common case —
-turning it on is a net loss, and a ten-line cost model predicts exactly where the
-line is. That's the audit's spiciest result: not that speculation is bad, but
-that its headline is measured in the regime real servers don't run in.
-
-(CPU timing makes the generic loss noisy here; the GPU run, where the batch is
-genuinely compute-bound past B*, is where the loss becomes unambiguous.)
+The measurement matches the model **to the batch**: the cost model predicted net
+loss at batch ≥ 2 on generic prose, and the GPU measures a clean monotonic slide
+from 0.97 at B=1 to 0.40 at B=32 — a net loss from B=2 onward, worsening as the
+batch gets more compute-bound. Grounded/repetitive traffic stays a 2-5x win
+throughout. The consequence for the field: the "2.7x speculative decoding" number
+that gets quoted is a **batch-1, grounded-workload** number. On a batched server
+serving generic chat — the common case — speculation is a *net loss that gets
+worse with load*, and a ten-line cost model predicts exactly where the line is
+before you run anything. That's the audit's spiciest result: not that speculation
+is bad, but that its headline is measured in the regime real servers don't run in.
 
 ## Does any of this hold past 0.5B? (scale axis + roofline crossover)
 
@@ -365,9 +366,14 @@ to `B* = W / (S · kv_per_tok)`, then flattens as KV bandwidth takes over. The
 study measures where throughput actually knees and compares it to the prediction.
 It only means anything on a GPU — a CPU isn't saturably bandwidth-bound, so the
 measured knee there is noise, and the harness prints that caveat. On a T4 at
-S=2048 (fp16) the model predicts **B\*≈39**; whether the machine agrees is the
-"did I understand the hardware" test, and the row to lead with once the GPU run
-fills the measured number in.
+S=2048 (fp16) the model predicts **B\*≈39**. The first GPU run measured B=1/4/8
+at 29/110/142 tok/s (step time 34/36/56 ms — starting to knee) before OOMing at
+B=16, because vLLM's `EngineCore` process was still holding GPU memory from an
+earlier step (ordering since fixed: crossover now runs before vLLM). The partial
+data hints the real knee comes *earlier* than the ideal B\*≈39 — which would make
+sense (kernel-launch and Python overhead eat into the ideal roofline) — but the
+OOM contaminated it, so this one needs a clean re-run before I'll claim a number.
+The honest state: prediction in hand, clean measurement pending.
 
 ## Out of scope (and why)
 
@@ -385,7 +391,7 @@ Background in `docs/frontier/`. These are left out on purpose, not missed:
 ## Reference ceiling
 
 `bench/vllm_ref.py` runs the same open-loop workload through vLLM's
-AsyncLLMEngine. On the T4, vLLM does 1,700.7 tok/s vs nanoserve's best of 265.8
+AsyncLLMEngine. On the T4, vLLM does 1,708.7 tok/s vs nanoserve's best of 278.5
 (continuous), so nanoserve reaches **16% of vLLM**. That gap is the fused
 FlashAttention/PagedAttention kernels vLLM has and I don't; 1/6th of a
 production engine with masked SDPA and pure-Python scheduling is the honest
@@ -395,14 +401,22 @@ result, and closing it would mean writing the kernel (out of scope).
 
 - Built an LLM inference server from scratch (Python/PyTorch, no custom CUDA):
   naive to static to continuous batching to a paged KV cache, 9.6x throughput
-  over naive at p99 TTFT 2.2s (from 53s), reaching 16% of vLLM on the same T4.
-- Audited published inference optimizations in a controlled rig, measuring
-  against a documented +/-24% noise floor and verifying each one token-exact
-  first. Found speculative decoding's speedup is workload-dependent (2.7x on
-  repetitive text, 1.0x on generic prose), prefix caching holds up (70% of
-  prefill saved on shared prompts), and 8-bit KV is near-lossless (93% top-1, 2x
-  memory). Cut four first-pass numbers that didn't survive scrutiny, including my
-  own "paged beats continuous," which turned out to be CPU noise.
+  over naive at p99 TTFT 2.0s (from 52s), reaching 16% of vLLM on the same T4;
+  reframed in goodput (req/s meeting a TTFT+TPOT SLO), continuous sustains ~200x
+  naive's sustainable load.
+- Built speculative decoding *inside* the continuous batch (token-exact) and
+  measured that it's a net loss under batching on generic traffic — 3-5x win on
+  repetitive text but sliding from 0.97x to 0.40x as the batch grows on generic
+  prose — exactly matching a cost model that predicts the win-to-loss crossover
+  from acceptance rate and the roofline batch. The quoted "2.7x speculative
+  decoding" is a batch-1, grounded-workload number; on a batched generic-chat
+  server it's a net loss.
+- Audited published optimizations in a controlled rig, verifying each token-exact
+  and measuring past the noise floor: prefix caching holds up (70% of prefill
+  saved), 8-bit KV is near-lossless (perplexity 27.9 vs 28.7 fp16, 2x memory)
+  while my naive 4-bit collapses (443). Cut five first-pass numbers that didn't
+  survive scrutiny — including my own "paged beats continuous" (CPU noise) and an
+  "8-bit drifts 48%" that was a metric artifact.
 - Made correctness a checked property: batched, paged, speculative, and
   prefix-cached decoding are all verified token-for-token against a naive
   baseline (including 1-token prompts, permutation, and block boundaries), so

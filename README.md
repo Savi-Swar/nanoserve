@@ -17,13 +17,20 @@ flatten. The fp16 T4 numbers are just below.)*
 Under continuous batching, throughput goes up as offered load increases while
 TTFT stays roughly flat.
 
-On a **T4 (fp16)**, continuous batching does **9.6x** naive throughput (265.8 vs
-27.8 tok/s) at a p99 TTFT of 2.2s vs naive's 53s, reaching **16% of vLLM** (1,700
-tok/s) with no custom CUDA kernels. Paged measured slower (108.7 tok/s) but that
-run's block gather was a pure-Python loop — since vectorized (`index_select` over
-a flattened block table, still token-exact), so that number is being re-measured;
-paged's deterministic win is memory capacity, not raw speed. Full GPU table and
-caveats in [docs/writeup.md](docs/writeup.md#gpu-results-fp16-t4).
+On a **T4 (fp16)**, continuous batching does **9.6x** naive throughput (278.5 vs
+29.1 tok/s) at p99 TTFT 2.0s vs naive's 52s, reaching **16% of vLLM** (1,708
+tok/s) with no custom CUDA kernels. In goodput (req/s meeting a 500ms/50ms SLO)
+it sustains **~200x** naive, which meets the SLO on essentially zero requests.
+Paged runs ~16% slower than continuous (a clean, past-the-noise-floor result
+after vectorizing the block gather) — its win is memory capacity (3x concurrency),
+not speed.
+
+The spiciest result: I built **speculative decoding inside the continuous batch**
+(token-exact) and measured that on **generic prose it's a net loss the moment you
+batch** (0.97x → 0.40x as the batch grows) while staying a 2-5x win on repetitive
+text — matching a cost model that predicts the crossover. The quoted "2.7x spec
+decoding" is a batch-1, grounded-workload number. Full GPU tables in
+[docs/writeup.md](docs/writeup.md#gpu-results-fp16-t4).
 
 The CPU dev-box numbers below show the same relative ladder (device-independent):
 
