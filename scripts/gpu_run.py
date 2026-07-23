@@ -107,6 +107,14 @@ def write_summary(ok):
             lines.append(f"  {best} sustains {caps[best] / caps['naive']:.1f}x naive's goodput under SLO")
         lines.append("")
 
+    cx = _load("results/crossover.json")
+    if cx:
+        tag = "  (CPU smoke test — not valid)" if cx.get("cpu_smoke_test") else ""
+        lines.append(f"roofline crossover (S={cx.get('seq_len')}): predicted B*="
+                     f"{cx.get('predicted_crossover_batch', 0):.0f}, measured ~= "
+                     f"{cx.get('measured_crossover_batch')}{tag}")
+        lines.append("")
+
     for name, path in [("spec", "results/spec.json"), ("prefix", "results/prefix.json"),
                        ("kv_quant", "results/kv_quant.json")]:
         d = _load(path)
@@ -171,6 +179,12 @@ def main():
     ok["roofline"] = step("roofline: predicted vs measured", [
         "bench.roofline", "--mem-bandwidth-gbps", "320", "--peak-tflops", "65",
         "--measured", "results/sweep.json"])
+
+    # 8. roofline crossover: does the predicted crossover batch match measurement?
+    ok["crossover"] = step("roofline crossover (predicted vs measured batch)", [
+        "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
+        "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320"],
+        timeout=600)
 
     print("\n" + "#" * 70)
     write_summary(ok)

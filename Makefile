@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline spec prefix kvquant goodput noise audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline crossover scale spec prefix kvquant goodput noise audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -19,6 +19,8 @@ help:
 	@echo "  memory     KV fragmentation ablation (no model) -> results/memory.json"
 	@echo "  trace      replay the real Azure trace, all engines -> results/trace.json"
 	@echo "  roofline   analytical throughput ceiling (no model)"
+	@echo "  crossover  measured vs predicted decode crossover batch -> results/crossover.json"
+	@echo "  scale      rerun the audit across model sizes (0.5B/1.5B/3B) -> results/scale.json"
 	@echo "  spec       audit row 1: speculative decoding tokens/forward -> results/spec.json"
 	@echo "  prefix     audit row 2: prefix caching prefill savings -> results/prefix.json"
 	@echo "  kvquant    audit row 3: KV quantization memory/quality -> results/kv_quant.json"
@@ -53,6 +55,12 @@ trace:
 
 roofline:
 	python -m bench.roofline
+
+crossover:
+	python -m bench.crossover_study --device $(DEVICE) --batches 1 4 8 16 32 64 --seq-len 2048 --steps 12
+
+scale:
+	python -m bench.scale_study --device $(DEVICE)
 
 spec:
 	python -m bench.spec_study

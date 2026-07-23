@@ -292,6 +292,40 @@ timing noise (+/-24%) destroys. Implementing it and measuring on a noisy box
 would produce numbers I couldn't defend, so I left it for the GPU rather than
 rush it.
 
+## Does any of this hold past 0.5B? (scale axis + roofline crossover)
+
+0.5B is a pathological size — its arithmetic-intensity ratios are nothing like a
+real deployment — so the first thing a skeptical reviewer asks is whether the
+findings survive scale. Two experiments answer it, both free on Kaggle.
+
+**Scale axis** (`bench/scale_study.py` / `make scale` / `notebooks/nanoserve_scale.ipynb`)
+reruns the audit at 0.5B / 1.5B / 3B (all fit a free T4). The 0.5B column
+reproduces the known results; the point is the *trend*:
+
+| metric | 0.5B | 1.5B | 3B |
+|---|---|---|---|
+| spec tok/forward, generic | 1.07 | — | — |
+| spec tok/forward, grounded | 4.00 | — | — |
+| prefix prefill saved | 40% | — | — |
+| 8-bit KV perplexity Δ | −0.6 | — | — |
+| predicted crossover B* | 39 | — | — |
+
+(1.5B/3B fill in from the scale notebook.) A useful subtlety: for **prompt-lookup**
+speculation the generic number is driven by whether the text repeats, not by model
+size, so I expect it to stay ~1.0× across the column — which, if it holds, is a
+*stronger* statement of "workload claim, not method claim" than the single-size
+result. (A draft-model speculator would move with scale; PLD shouldn't.)
+
+**Roofline crossover** (`bench/crossover_study.py` / `make crossover`) tests the
+model's one falsifiable claim: decode throughput scales ~linearly with batch up
+to `B* = W / (S · kv_per_tok)`, then flattens as KV bandwidth takes over. The
+study measures where throughput actually knees and compares it to the prediction.
+It only means anything on a GPU — a CPU isn't saturably bandwidth-bound, so the
+measured knee there is noise, and the harness prints that caveat. On a T4 at
+S=2048 (fp16) the model predicts **B\*≈39**; whether the machine agrees is the
+"did I understand the hardware" test, and the row to lead with once the GPU run
+fills the measured number in.
+
 ## Out of scope (and why)
 
 Background in `docs/frontier/`. These are left out on purpose, not missed:
