@@ -9,6 +9,7 @@ from .engine import (
 from .model import ModelRunner, sample
 from .request import Request, SamplingParams
 from . import speculative  # registers SpeculativeEngine into ENGINES  # noqa: F401
+from . import spec_batched  # registers BatchedSpecEngine (spec_cont)  # noqa: F401
 
 __all__ = [
     "ENGINES",

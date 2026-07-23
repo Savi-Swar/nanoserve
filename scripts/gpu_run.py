@@ -115,6 +115,15 @@ def write_summary(ok):
                      f"{cx.get('measured_crossover_batch')}{tag}")
         lines.append("")
 
+    sb = _load("results/spec_batched.json")
+    if sb and sb.get("workloads"):
+        for name, w in sb["workloads"].items():
+            xo = w.get("measured_crossover_batch")
+            peak = max((r["ratio"] for r in w["rows"]), default=0)
+            tail = f"net LOSS at batch>={xo}" if xo else "stayed a win"
+            lines.append(f"batched spec, {name}: peak {peak:.1f}x vs continuous, {tail}")
+        lines.append("")
+
     for name, path in [("spec", "results/spec.json"), ("prefix", "results/prefix.json"),
                        ("kv_quant", "results/kv_quant.json")]:
         d = _load(path)
@@ -164,6 +173,13 @@ def main():
         "bench.goodput_study", "--engines", "naive", "static", "continuous", "paged",
         "--rates", "4", "8", "16", "--n", "32", "--max-tokens", "48",
         "--ttft-slo", "500", "--tpot-slo", "50", "--device", DEV])
+
+    # 4c. does speculative decoding survive batching? (the headline)
+    ok["spec_cost"] = step("spec cost model (predicted win->loss crossover)",
+                           ["bench.spec_cost"])
+    ok["spec_batched"] = step("batched speculative decoding: measured vs continuous", [
+        "bench.spec_batched_study", "--device", DEV, "--batches", "1", "2", "4",
+        "8", "16", "32", "--steps", "16"], timeout=900)
 
     # 5. low-noise paged-vs-continuous (the comparison CPU noise couldn't resolve)
     ok["noise"] = step("noise-floor: continuous vs paged (5 runs)", [

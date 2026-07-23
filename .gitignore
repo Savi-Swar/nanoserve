@@ -19,6 +19,8 @@ results/kv_quant.json
 results/goodput.json
 results/scale.json
 results/crossover.json
+results/spec_batched.json
+results/spec_cost.json
 
 # large external dataset (fetch via data/README.md)
 data/*.csv

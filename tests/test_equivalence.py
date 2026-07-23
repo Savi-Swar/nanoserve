@@ -100,6 +100,19 @@ def test_speculative_equals_naive(ctx):
         assert req.output_tokens == ref[i], f"spec != naive for {p!r}"
 
 
+def test_batched_spec_equals_naive(ctx):
+    """Speculative decoding inside a continuous batch stays token-exact."""
+    from server.spec_batched import SpecPagedState
+    m, sample, Request, SamplingParams, ref = ctx
+    st = SpecPagedState(m, num_blocks=4096, block_size=16, ngram=3, draft=8)
+    reqs = _mkreqs(Request, SamplingParams)
+    st.add(reqs)
+    while st.any_active:
+        st.step()
+    for i in range(len(PROMPTS)):
+        assert reqs[i].output_tokens == ref[i], f"spec_cont != naive for {PROMPTS[i]!r}"
+
+
 def test_prefix_cache_equals_naive(ctx):
     """Reusing a shared prefix's KV must not change the output."""
     from server.prefix_cache import PrefixCache
