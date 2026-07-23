@@ -44,10 +44,12 @@ def main():
               "GPU-util numbers will be n/a and vLLM will fail.")
 
     ok = {}
-    # 1. the throughput ladder at GPU scale (fp16), + graphs
+    # 1. the throughput ladder at GPU scale (fp16), + graphs.
+    # Kept modest so a free-tier T4 finishes before Colab times out; bump
+    # --n / --rates on a dedicated box.
     ok["sweep"] = step("engine x rate sweep (fp16)", [
         "bench.sweep", "--engines", "naive", "static", "continuous", "paged",
-        "--rates", "4", "8", "16", "32", "64", "--n", "256", "--max-tokens", "128",
+        "--rates", "4", "8", "16", "32", "--n", "96", "--max-tokens", "64",
         "--device", DEV])
     ok["plot"] = step("plots", ["bench.plot"])
 
@@ -56,7 +58,7 @@ def main():
 
     # 3. real Azure trace at FULL lengths (len-scale 1) — natural + burst
     ok["trace"] = step("Azure trace, full lengths", [
-        "bench.trace_compare", "--device", DEV, "--n", "200", "--len-scale", "1"])
+        "bench.trace_compare", "--device", DEV, "--n", "128", "--len-scale", "1"])
 
     # 4. the audit rows at fp16
     ok["spec"] = step("audit: speculative decoding", ["bench.spec_study", "--device", DEV])
@@ -70,7 +72,7 @@ def main():
 
     # 6. the reference ceiling (needs vLLM)
     ok["vllm"] = step("vLLM reference ceiling", [
-        "bench.vllm_ref", "--n", "200", "--rate", "16", "--out", "results/vllm.json"])
+        "bench.vllm_ref", "--n", "128", "--rate", "16", "--out", "results/vllm.json"])
 
     # 7. roofline overlay: predicted vs measured (T4 presets; override for your GPU)
     ok["roofline"] = step("roofline: predicted vs measured", [
