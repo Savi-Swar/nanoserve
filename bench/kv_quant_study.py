@@ -14,10 +14,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+
+import torch
 
 from server.kv_quant import quantize_cache
 from server.model import ModelRunner
+
+# A held-out English passage for perplexity (a real quality metric, unlike
+# top-1 agreement which is a proxy a reviewer will poke at).
+PPL_TEXT = (
+    "The transformer processes a sequence in parallel with self-attention, where "
+    "each token attends to every earlier token to build a contextual representation. "
+    "During generation the model runs one token at a time, and the keys and values "
+    "of all previous tokens are cached so they are not recomputed. This key-value "
+    "cache is what dominates memory at inference time, and it grows with both the "
+    "batch size and the sequence length. Quantizing the cache to fewer bits trades a "
+    "little numerical precision for a large cut in that memory footprint, which is "
+    "worth it only if the loss in output quality stays small."
+)
 
 PROMPTS = [
     "The capital of France is",
@@ -37,6 +53,23 @@ def fp32_tokens(m, prompt, n):
         logits, cache, cur = m.decode(toks[-1], cache, cur)
         toks.append(int(logits.argmax(-1)))
     return toks
+
+
+def perplexity(m, ids, bits):
+    """Teacher-forced perplexity of `ids` with the KV cache quantized to `bits`
+    (bits=None = fp16 baseline). Lower is better; the fp16-vs-quantized gap is
+    the real quality cost of the quantizer."""
+    logits, cache, cur = m.prefill(ids[:1])
+    if bits:
+        quantize_cache(cache, bits)
+    nll = 0.0
+    for i in range(1, len(ids)):
+        logp = torch.log_softmax(logits[0].float(), dim=-1)
+        nll += -logp[ids[i]].item()
+        logits, cache, cur = m.decode(ids[i], cache, cur)
+        if bits:
+            quantize_cache(cache, bits)
+    return math.exp(nll / (len(ids) - 1))
 
 
 def teacher_forced_agreement(m, prompt, bits, ref):
@@ -64,9 +97,12 @@ def main():
     m.warmup()
 
     refs = {p: fp32_tokens(m, p, N) for p in PROMPTS}
+    ppl_ids = m.encode(PPL_TEXT)
+    ppl_fp16 = perplexity(m, ppl_ids, None)
 
-    out = {}
-    print(f"{'bits':<6}{'mem vs fp32':<14}{'mem vs fp16':<14}{'top-1 agreement'}")
+    out = {"fp16_perplexity": ppl_fp16}
+    print(f"fp16 baseline perplexity: {ppl_fp16:.2f}  ({len(ppl_ids)} tokens)\n")
+    print(f"{'bits':<6}{'mem vs fp16':<13}{'top-1 agree':<13}{'perplexity':<13}{'ppl delta'}")
     for bits in a.bits:
         agree = tot = 0
         for prompt in PROMPTS:
@@ -74,12 +110,14 @@ def main():
             agree += ag
             tot += n
         acc = agree / tot
+        ppl = perplexity(m, ppl_ids, bits)
         out[str(bits)] = {"mem_vs_fp32": 32 / bits, "mem_vs_fp16": 16 / bits,
-                          "top1_agreement": acc, "steps": tot}
-        print(f"{bits:<6}{32/bits:>6.0f}x{'':<7}{16/bits:>6.1f}x{'':<7}{acc*100:.1f}%")
-    print("-" * 52)
-    print("8-bit KV is ~lossless; quality degrades as bits drop — the "
-          "memory/quality knob, quantified with a cascade-free metric.")
+                          "top1_agreement": acc, "steps": tot, "perplexity": ppl}
+        print(f"{bits:<6}{16/bits:>5.1f}x{'':<7}{acc*100:>7.1f}%{'':<5}"
+              f"{ppl:>8.2f}{'':<5}{ppl - ppl_fp16:>+7.2f}")
+    print("-" * 58)
+    print("perplexity is the metric a reviewer trusts; top-1 agreement is the fast "
+          "proxy. 8-bit KV should barely move perplexity, low bits should blow it up.")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w") as f:

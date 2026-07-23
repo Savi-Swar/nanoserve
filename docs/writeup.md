@@ -254,15 +254,23 @@ where nothing does, so it's worth having a case that survives.
 ### Row 3: KV quantization
 
 Storing the KV cache in low-bit ints (`server/kv_quant.py`, per-(token,head)
-symmetric) shrinks it by 32/bits. Quality is measured as teacher-forced top-1
-agreement with the fp32 model: feed the same reference token each step and check
-whether the quantized argmax still matches.
+symmetric) shrinks it by 32/bits. Quality is measured two ways: teacher-forced
+top-1 agreement with fp16 (fast proxy), and **perplexity** on a held-out passage
+(the metric a reviewer actually trusts — top-1 can stay high while the
+distribution rots). fp16 baseline perplexity is 28.8.
 
-| bits | mem vs fp16 | top-1 agreement |
-|---|---|---|
-| 8 | 2x | 93% (~lossless) |
-| 4 | 4x | 50% |
-| 2 | 8x | 10% |
+| bits | mem vs fp16 | top-1 agreement | perplexity (Δ vs fp16) |
+|---|---|---|---|
+| 8 | 2x | 93% | **27.9 (−0.9)** — no measurable loss |
+| 4 | 4x | 50% | 427 (+398) — collapses |
+| 2 | 8x | 10% | 2317 (+2288) — destroyed |
+
+Perplexity makes the cliff visceral: **8-bit KV is genuinely free** (perplexity
+doesn't move), and my **naive 4-bit quantizer falls apart** (15x worse
+perplexity) even though top-1 agreement makes 4-bit look merely mediocre at 50%.
+That's the concrete version of the "this is a naive quantizer" caveat below —
+production per-channel schemes (KIVI) hold 4-bit; a symmetric per-(token,head)
+scheme does not, and perplexity shows exactly how badly.
 
 Two caveats on this row:
 
