@@ -2,194 +2,196 @@
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Savi-Swar/nanoserve/blob/main/notebooks/nanoserve_gpu.ipynb)
 
-A from-scratch LLM inference server in Python + PyTorch, no custom CUDA. The
-model is a stock Qwen2.5-0.5B. The part I actually built is the scheduler: the
-layer that decides how requests share the GPU.
-
-To reproduce the fp16 numbers on a free GPU, open the Colab notebook above and
-run all cells (details in [docs/gpu_run.md](docs/gpu_run.md)).
+A from-scratch LLM inference server in Python and PyTorch, no custom CUDA. The
+model is a stock Qwen2.5-0.5B. The part I built is the scheduler, the layer that
+decides how requests share the GPU. The repo then uses it as an audit rig to test
+which published inference optimizations actually help on realistic workloads.
 
 ![throughput vs load](results/throughput_vs_rate.png)
 
-*(CPU dev box — the shape is the point: continuous scales with load, the others
-flatten. The fp16 T4 numbers are just below.)*
+## Results (fp16, one T4)
 
-Under continuous batching, throughput goes up as offered load increases while
-TTFT stays roughly flat.
+| engine | throughput | vs naive | p99 TTFT |
+|---|---|---|---|
+| naive | 29.1 tok/s | 1x | 52 s |
+| static batching | 142.9 tok/s | 4.9x | 7.7 s |
+| continuous batching | 278.5 tok/s | 9.6x | 2.0 s |
+| paged KV cache | 237.2 tok/s | 8.1x | 2.6 s |
 
-On a **T4 (fp16)**, continuous batching does **9.6x** naive throughput (278.5 vs
-29.1 tok/s) at p99 TTFT 2.0s vs naive's 52s, reaching **16% of vLLM** (1,708
-tok/s) with no custom CUDA kernels. In goodput (req/s meeting a 500ms/50ms SLO)
-it sustains **~200x** naive, which meets the SLO on essentially zero requests.
-Paged runs ~16% slower than continuous (a clean, past-the-noise-floor result
-after vectorizing the block gather) — its win is memory capacity (3x concurrency),
-not speed.
+Continuous batching is 9.6x naive throughput and reaches 16% of vLLM (1,708
+tok/s) with masked SDPA and no fused kernels. Measured as goodput (requests/sec
+meeting a 500 ms TTFT / 50 ms TPOT SLO) it sustains roughly 200x naive, which
+meets that SLO on almost no requests once its queue backs up.
 
-The spiciest result: I built **speculative decoding inside the continuous batch**
-(token-exact) and measured that on **generic prose it's a net loss the moment you
-batch** (0.97x → 0.40x as the batch grows) while staying a 2-5x win on repetitive
-text — matching a cost model that predicts the crossover. The quoted "2.7x spec
-decoding" is a batch-1, grounded-workload number. Full GPU tables in
-[docs/writeup.md](docs/writeup.md#gpu-results-fp16-t4).
+## What it found
 
-The CPU dev-box numbers below show the same relative ladder (device-independent):
+- Speculative decoding is a net loss under batching on generic traffic. I built
+  speculation inside the continuous batch (token-exact) and measured it drop from
+  0.97x to 0.40x as the batch grows on generic prose, while staying a 2-5x win on
+  repetitive text. That matches a cost model that predicts the win/loss crossover
+  from acceptance rate and the roofline batch size. The usual "2.7x speculative
+  decoding" figure is a batch-1, grounded-workload number.
+- Static batching has the worst TTFT tail of any engine on the real Azure trace,
+  worse than naive, from head-of-line blocking. The synthetic benchmark hid this.
+- Paged KV cuts fragmentation from 68% to 4% (3x more sequences per byte) but runs
+  about 16% slower than continuous, past the noise floor. It buys capacity, not
+  speed.
+- 8-bit KV is nearly free (perplexity 27.9 vs 28.7 fp16, half the memory). Prefix
+  caching saves 70% of prefill on shared prompts. My naive 4-bit quantizer falls
+  apart (perplexity 443).
 
-| engine | throughput | TTFT p99 |
-|---|---|---|
-| naive | 24 tok/s | ~9,000 ms |
-| static | 34 tok/s | ~3,700 ms |
-| continuous | 41→63 tok/s (scales with load) | ~200 ms |
-| paged | 66 tok/s | ~240 ms |
+Method, tables, and the numbers that didn't hold up are in
+[docs/writeup.md](docs/writeup.md).
 
-Replaying the real
-[Azure inference trace](docs/writeup.md#real-traffic-the-synthetic-benchmark-lied)
-instead of uniform synthetic prompts changes the conclusions. Continuous
-batching's advantage moves from throughput to tail latency, and static batching
-ends up with the worst TTFT tail of any engine (worse than naive) because it
-head-of-line blocks on long generations. One early "paged beats continuous"
-result didn't hold up across repeated runs (it sat inside the noise floor), so I
-dropped it. More in [docs/writeup.md](docs/writeup.md).
+## The audit
 
-## Audit: which optimizations actually help on real workloads?
-
-This is the main point of the project. Implement published optimizations one at
-a time in a rig I control, ablate each in isolation, and measure them on
-workloads I pick rather than the one each paper picked for itself. Everything is
-measured against a ±24% noise floor (`make noise`), and each optimization is
-checked to produce identical output tokens to naive before I measure speed.
+Implement published optimizations one at a time in a rig I control, ablate each
+in isolation, and measure them on workloads I pick instead of the one each paper
+picked for itself. Everything is measured past a noise floor (`make noise`) and
+checked token-exact against naive before any speed number.
 
 | optimization | result | `make` |
 |---|---|---|
-| speculative decoding | 2.7x on repetitive text, 1.0x (no gain) on generic prose. The speedup is a property of the workload, not the method. | `spec` |
-| prefix caching | holds up: 70% of prefill saved with a shared system prompt, ~0 without, output identical | `prefix` |
-| KV quantization | 8-bit is near-lossless (93% top-1 agreement, 2x memory); 4/2-bit degrade. Also a metric trap: naive token-match said 8-bit "drifts 48%", teacher-forced agreement says 93%. | `kvquant` |
-| chunked prefill | left out: its payoff is tail latency, which the CPU noise floor would bury | — |
+| spec decoding, batch 1 | 2.7x on repetitive text, 1.0x on generic. A workload property, not a method one. | `spec` |
+| spec decoding, in the batch | net loss on generic once you batch (0.97x to 0.40x), 2-5x win on grounded. Matches the cost model. | `spec-batched` |
+| prefix caching | holds up: 70% of prefill saved on a shared prompt, ~0 without, output identical | `prefix` |
+| KV quantization | 8-bit nearly lossless (ppl 27.9 vs 28.7), 4-bit collapses (443) | `kvquant` |
+| goodput under SLO | continuous sustains ~200x naive's sustainable load | `goodput` |
+| roofline crossover | analytical B* around 39; measured vs predicted on GPU | `crossover` |
+| scale axis | rerun the audit at 0.5B / 1.5B / 3B | `scale` |
+| chunked prefill | left out; its payoff is tail latency the noise floor would bury | |
 
-Method and the numbers that didn't survive:
-[docs/writeup.md](docs/writeup.md#audit-which-optimizations-survive-contact-with-real-workloads).
-
-## Reproduce
+## Running it
 
 ```bash
-make all      # memory ablation + engine sweep + graphs -> results/
+pip install -r requirements.txt
+make all                 # memory ablation + engine sweep + graphs -> results/
+make audit               # spec + prefix + KV-quant ablations
+make bench DEVICE=cuda    # the sweep on a GPU
+```
 
-# or in Docker, with the PNGs written back out through the bind mount:
+`make` with no target lists everything. The full GPU pipeline (ladder, trace,
+audit, batched-spec, goodput, vLLM ceiling) is one command,
+`python scripts/gpu_run.py`, or the Colab/Kaggle notebook linked above. See
+[docs/gpu_run.md](docs/gpu_run.md). There's also a Dockerfile:
+
+```bash
 docker build -t nanoserve . && docker run --rm -v $(pwd)/results:/app/results nanoserve
 ```
 
-`make` with no target lists everything. `make bench DEVICE=cuda` runs the sweep
-on a GPU. Individual commands are under [Quickstart](#quickstart).
+## Serving
+
+It runs as an actual HTTP server, not just a benchmark loop. Concurrent clients
+land in one shared queue and the continuous batcher serves them together.
+
+```bash
+python serve.py --engine continuous --port 8000     # --device cpu on Apple Silicon
+
+curl -s localhost:8000/healthz
+curl -s localhost:8000/metrics
+curl -s -XPOST localhost:8000/generate -d '{"prompt":"The capital of France is","max_tokens":16}'
+```
+
+Backpressure is the part that makes it a server: a request is admitted only while
+`pending + active` is under `--max-queue`. Past that the server sheds load with a
+503 instead of letting the queue grow without bound and wrecking every request's
+latency. `/metrics` is Prometheus text: accepted/completed/shed counts, live queue
+depth, throughput, and p99 TTFT.
+
+```
+$ curl -s localhost:8000/metrics
+nanoserve_requests_accepted_total 8
+nanoserve_requests_shed_total 13
+nanoserve_queue_depth 0
+nanoserve_throughput_tokens_per_second 24.5
+nanoserve_ttft_p99_ms 413.9
+```
 
 ## The ladder
 
 Four engines, each a step up from the last:
 
 ```
-naive           one request at a time              baseline
-static batching wait for N, run together           GPU idles when short reqs finish
-continuous      evict finished, admit waiting      slot reused right away
-paged KV cache  block allocator + free list        ~3x more concurrency per byte
+naive           one request at a time             baseline
+static batching wait for N, run together          GPU idles when short reqs finish
+continuous      evict finished, admit waiting     slot reused right away
+paged KV cache  block allocator + free list        3x concurrency per byte
 ```
 
-Paged trades about 6% raw speed (the per-step block gather) for roughly 3x the
-concurrency per byte of memory. On 64 length-skewed sequences it drops KV
-fragmentation from 69% to 4%, so a fixed budget holds 3x more sequences. The
-gain is capacity under memory pressure, not latency. Details in
-[docs/writeup.md](docs/writeup.md).
+Paged stores KV in fixed blocks from a free list, so a sequence grows on demand
+instead of reserving room for the longest length it might reach. On 64
+length-skewed sequences that drops fragmentation from 68% to 4%. It costs about
+16% throughput against the contiguous engine because the per-step block gather is
+real work even after vectorizing it. The gain is capacity under memory pressure.
+
+## Correctness
+
+Batched, paged, speculative (single-sequence and in-batch), and prefix-cached
+decoding are all checked token-for-token against naive single-sequence decoding
+under greedy, including 1-token prompts, permutation across batch positions, block
+boundaries, and speculative accept/reject. These change speed and memory, not the
+output.
+
+```bash
+python -m pytest -q                                        # fast tests
+RUN_SLOW=1 python -m pytest tests/test_equivalence.py -q    # the token-exactness oracle (loads the model)
+```
 
 ## Layout
 
 ```
 server/
-  request.py       Request + SamplingParams
-  model.py         ModelRunner: prefill / decode primitives, sampling
-  batched.py       BatchState: left-padded batched KV, admit/step/evict
+  request.py       Request + SamplingParams, latency/SLO properties
+  model.py         ModelRunner: prefill / decode / decode_many, sampling
+  batched.py       BatchState: left-padded contiguous batched KV
   paged_cache.py   BlockAllocator: free list, block tables, fragmentation metrics
-  paged_exec.py    PagedKVStore + PagedBatchState: KV in blocks, gather/scatter
-  speculative.py   prompt-lookup speculative decoding
+  paged_exec.py    PagedKVStore + PagedBatchState: KV in blocks, vectorized gather
+  speculative.py   single-sequence prompt-lookup speculative decoding
+  spec_batched.py  speculative decoding inside the continuous batch (paged)
   prefix_cache.py  prefix KV reuse
   kv_quant.py      low-bit KV cache quantization
-  engine.py        naive / static / continuous / paged engines
+  engine.py        naive / static / continuous / paged / spec-in-batch engines
+  service.py       HTTP service: submit-and-wait, backpressure/load shedding, /metrics
+serve.py           run it as a server: POST /generate, GET /metrics, GET /healthz
 bench/
   workload.py      open-loop Poisson load generator + prompt bank
-  trace.py         real Azure trace replay
-  metrics.py       throughput, TTFT/e2e/queue p50/p90/p99, JSON out
+  trace.py         Azure LLM inference trace replay
+  synthetic_trace.py  synthetic long-context (RAG-style) workload
+  metrics.py       throughput, TTFT/e2e/queue/TPOT tails, goodput
   gpu.py           nvidia-smi utilization sampler (no-op off CUDA)
   run_bench.py     one engine, one workload -> report
   sweep.py         engine x rate grid -> results/sweep.json
   repeat.py        N-run stats: mean, 95% CI, noise floor
-  memory_study.py  fragmentation ablation: reserve vs padded vs paged
-  spec_study.py    speculative decoding tokens/forward
+  memory_study.py  KV fragmentation ablation
+  goodput_study.py req/s meeting a TTFT + TPOT SLO
+  spec_study.py    speculative decoding tokens/forward (batch 1)
+  spec_batched_study.py  spec-in-batch vs continuous
+  spec_cost.py     analytical spec speedup / crossover model
   prefix_study.py  prefix caching prefill savings
-  kv_quant_study.py  KV quant memory/quality
+  kv_quant_study.py  KV quant memory vs perplexity
   trace_compare.py all engines on the real trace
-  roofline.py      analytical throughput ceiling
-  plot.py          the grid -> PNGs
-  vllm_ref.py      vLLM reference, run on a CUDA box
-docs/
-  research.md      background reading, mapped to this build
-  frontier/        deeper notes: history, spec decoding, KV, kernels, systems
-  writeup.md       method, the ladder, the ablations, the audit
-tests/             fast tests + a guarded equivalence oracle
-```
-
-## Quickstart
-
-```bash
-pip install -r requirements.txt
-
-# one run
-python -m bench.run_bench --engine paged --rate 8 --n 48 --max-tokens 64
-
-# the full comparison + graphs
-python -m bench.sweep --engines naive static continuous paged --rates 2 4 8 16 --n 64
-python -m bench.plot
-
-# the fragmentation ablation (no GPU needed)
-python -m bench.memory_study --n 64 --block-size 16
-
-# tests; the equivalence oracle loads the model so it's gated:
-python -m pytest -q
-RUN_SLOW=1 python -m pytest tests/test_equivalence.py -q
+  roofline.py      analytical throughput ceiling + predicted crossover
+  crossover_study.py  measured vs predicted decode crossover batch
+  scale_study.py   rerun the audit at 0.5B / 1.5B / 3B
+  regression.py    perf-regression gate for CI
+  plot.py          sweep grid -> PNGs
+  vllm_ref.py      vLLM reference ceiling
+scripts/gpu_run.py   the whole GPU pipeline -> results/summary.txt
+notebooks/           Kaggle/Colab GPU + scale notebooks
+docs/                writeup.md, research.md, frontier/, gpu_run.md
+tests/               fast tests + a guarded token-exactness oracle
 ```
 
 On Apple Silicon, MPS matmul is broken for this model, so dev happens on CPU
 (`--device cpu`). Real numbers come from a CUDA GPU (`--device cuda`).
 
-## Correctness
+## CI
 
-Batched, paged, speculative, and prefix-cached decoding are all checked
-token-for-token against single-sequence naive decoding under greedy, including
-the mid-stream KV-merge path. These are scheduling and memory optimizations, not
-approximations, so the output shouldn't change.
+GitHub Actions runs `pytest -q` (fast tests, no GPU) and a perf-regression gate
+(`bench.regression --check`) that fails the build if paged fragmentation or
+allocator throughput regresses past a threshold. It uses a deterministic no-model
+proxy so CI needs no GPU. Refresh the baseline with `bench.regression --update-baseline`.
 
-## CI / perf regression
+## License
 
-GitHub Actions (`.github/workflows/ci.yml`) runs two jobs on every push and PR:
-
-- **tests**: Python 3.12, `pip install -r requirements.txt`, `python -m pytest -q`
-  (fast tests only; `RUN_SLOW` is unset so the model-loading equivalence oracle
-  skips). No GPU, no model download.
-- **perf**: the regression gate, `python -m bench.regression --check`.
-
-The gate runs a deterministic, no-model proxy (CI runners have no GPU, and
-pulling a ~1 GB model per PR is wasteful) built from two signals:
-
-- fragmentation and paged capacity from the `bench.memory_study` ablation (pure
-  functions of a seeded workload and the real `BlockAllocator`, so
-  reproducible) for the correctness of paged packing;
-- allocator throughput (ops/sec) from a micro-benchmark of the pure-Python
-  `add_seq`/`append_token`/`free_seq` hot path (median of repeats) as a timing
-  signal.
-
-It fails the build if a metric regresses past its threshold: fragmentation up
->3%, paged capacity down >3% (tight, since these are deterministic), or
-allocator ops/sec down >15% (loose, since timing is noisy on shared runners).
-
-```bash
-python -m bench.regression --update-baseline   # refresh results/baseline.json
-python -m bench.regression --check             # gate against the baseline
-```
-
-Commit `results/baseline.json` and regenerate it when a change is meant to move
-the numbers.
+MIT, see [LICENSE](LICENSE).

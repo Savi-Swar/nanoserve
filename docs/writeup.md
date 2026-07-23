@@ -96,9 +96,9 @@ Two things this run resolved:
   kernels is a defensible number; the ~6x gap is the fused FlashAttention /
   PagedAttention kernels vLLM has and I don't.
 
-## Goodput (the metric that actually matters)
+## Goodput
 
-Peak tok/s is vanity: a server can post big throughput while most requests miss
+Peak tok/s can mislead: a server can post big throughput while most requests miss
 their latency target. Goodput counts only requests meeting *both* a TTFT and a
 TPOT (per-output-token) SLO, in req/s (`bench/goodput_study.py`). On the T4 under
 a strict **500ms-TTFT / 50ms-TPOT** SLO, sustainable goodput per engine:
@@ -114,9 +114,9 @@ Continuous sustains **~200x the goodput of naive** under this SLO — a sharper 
 more honest number than "9.6x peak throughput," because it captures that naive
 doesn't just run slower, it blows the latency target on *nearly every request*
 once the queue builds (its p99 TTFT is 50+ seconds). Goodput *rises* with load
-for continuous and collapses for naive and static. That shape, in the metric
-vLLM/DistServe actually optimize, is the whole argument for iteration-level
-scheduling in one table.
+for continuous and collapses for naive and static. That's the shape the papers
+(vLLM, DistServe) optimize for, and it's the case for iteration-level scheduling
+in one table.
 
 ## Paged KV fragmentation
 
@@ -255,9 +255,9 @@ where nothing does, so it's worth having a case that survives.
 
 Storing the KV cache in low-bit ints (`server/kv_quant.py`, per-(token,head)
 symmetric) shrinks it by 32/bits. Quality is measured two ways: teacher-forced
-top-1 agreement with fp16 (fast proxy), and **perplexity** on a held-out passage
-(the metric a reviewer actually trusts — top-1 can stay high while the
-distribution rots). fp16 baseline perplexity is 28.8.
+top-1 agreement with fp16 (fast proxy), and perplexity on a held-out passage
+(top-1 can stay high while the distribution rots underneath it). fp16 baseline
+perplexity is 28.8.
 
 | bits | mem vs fp16 | top-1 agreement | perplexity (Δ vs fp16) |
 |---|---|---|---|
@@ -265,12 +265,12 @@ distribution rots). fp16 baseline perplexity is 28.8.
 | 4 | 4x | 50% | 427 (+398) — collapses |
 | 2 | 8x | 10% | 2317 (+2288) — destroyed |
 
-Perplexity makes the cliff visceral: **8-bit KV is genuinely free** (perplexity
-doesn't move), and my **naive 4-bit quantizer falls apart** (15x worse
-perplexity) even though top-1 agreement makes 4-bit look merely mediocre at 50%.
-That's the concrete version of the "this is a naive quantizer" caveat below —
-production per-channel schemes (KIVI) hold 4-bit; a symmetric per-(token,head)
-scheme does not, and perplexity shows exactly how badly.
+Perplexity shows the cliff clearly: 8-bit KV is essentially free (perplexity
+doesn't move), while my naive 4-bit quantizer falls apart (15x worse perplexity)
+even though top-1 agreement makes 4-bit look merely mediocre at 50%. That's the
+concrete version of the "this is a naive quantizer" caveat below. Production
+per-channel schemes (KIVI) hold 4-bit; a symmetric per-(token,head) scheme does
+not, and perplexity shows how badly.
 
 Two caveats on this row:
 
@@ -331,10 +331,10 @@ from 0.97 at B=1 to 0.40 at B=32 — a net loss from B=2 onward, worsening as th
 batch gets more compute-bound. Grounded/repetitive traffic stays a 2-5x win
 throughout. The consequence for the field: the "2.7x speculative decoding" number
 that gets quoted is a **batch-1, grounded-workload** number. On a batched server
-serving generic chat — the common case — speculation is a *net loss that gets
-worse with load*, and a ten-line cost model predicts exactly where the line is
-before you run anything. That's the audit's spiciest result: not that speculation
-is bad, but that its headline is measured in the regime real servers don't run in.
+serving generic chat (the common case) speculation is a net loss that gets worse
+with load, and a ten-line cost model predicts where the line is before you run
+anything. The point isn't that speculation is bad. Its headline is just measured
+in a regime real servers don't run in.
 
 ## Does any of this hold past 0.5B? (scale axis + roofline crossover)
 
@@ -375,6 +375,20 @@ sense (kernel-launch and Python overhead eat into the ideal roofline) — but th
 OOM contaminated it, so this one needs a clean re-run before I'll claim a number.
 The honest state: prediction in hand, clean measurement pending.
 
+## Serving
+
+The scheduler runs behind an HTTP server (`serve.py`, `server/service.py`), not
+just a benchmark harness. Concurrent clients share one queue and the continuous
+batcher serves them together; `POST /generate` blocks until its request finishes.
+The part that makes it a server rather than a loop is backpressure: a request is
+admitted only while `pending + active` is under a limit, and past that the server
+returns 503 instead of letting the queue grow without bound and blowing every
+request's latency. `GET /metrics` exposes Prometheus counters (accepted, completed,
+shed, live queue depth, throughput, p99 TTFT). A 20-way concurrent burst against a
+6-deep queue served 7 and shed 13, and the metrics reflected it. This is basic
+load-shedding, not admission-control research, but it's the difference between a
+server and a for-loop.
+
 ## Out of scope (and why)
 
 Background in `docs/frontier/`. These are left out on purpose, not missed:
@@ -398,6 +412,20 @@ production engine with masked SDPA and pure-Python scheduling is the honest
 result, and closing it would mean writing the kernel (out of scope).
 
 ## Résumé bullets
+
+For a generalist / product SWE screener (same project, no ML jargon — it reads as
+scheduling, memory management, concurrency, and testing discipline):
+
+- Built a request scheduler and custom memory allocator for a high-throughput
+  serving system: 9.6x throughput over baseline, with a block-based allocator that
+  cut memory fragmentation 68% to 4% and tripled concurrent capacity per byte.
+  Exposed it as an HTTP service with backpressure and load shedding (503 past a
+  queue-depth limit) and a Prometheus `/metrics` endpoint.
+- Wrote an adversarial correctness oracle that verified byte-identical output
+  across all four implementations and a perf-regression gate in CI; the oracle and
+  a run-to-run noise floor together invalidated five of my own first-pass results.
+
+For an ML-infra / systems screener:
 
 - Built an LLM inference server from scratch (Python/PyTorch, no custom CUDA):
   naive to static to continuous batching to a paged KV cache, 9.6x throughput

@@ -1,10 +1,10 @@
-"""Goodput, the metric production serving actually optimizes for.
+"""Goodput: req/s that actually meet a latency SLO.
 
-Peak throughput is vanity: a server can post big tok/s while most requests miss
+Peak throughput can mislead: a server can post big tok/s while most requests miss
 their latency target. Goodput counts only requests that meet BOTH an SLO on
 TTFT (time to first token) and on TPOT (per-output-token latency), and reports
 requests/sec of those. Sweeping offered load, goodput rises with rate, then
-saturates and falls once the server can't keep the tail under SLO — the peak is
+saturates and falls once the server can't keep the tail under SLO. The peak is
 the sustainable capacity.
 
     python -m bench.goodput_study --engines naive static continuous paged \
