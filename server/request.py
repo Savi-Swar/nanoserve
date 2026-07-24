@@ -36,6 +36,15 @@ class Request:
     prompt_len: int = 0
     output_tokens: list[int] = field(default_factory=list)
 
+    # --- request lifecycle (server) ------------------------------------
+    # status walks: queued -> running -> done | cancelled | timeout
+    status: str = "new"
+    deadline: float | None = None          # perf_counter time to evict by (timeout)
+
+    @property
+    def finished_ok(self) -> bool:
+        return self.status == "done"
+
     @property
     def num_output(self) -> int:
         return len(self.output_tokens)
