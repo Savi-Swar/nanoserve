@@ -38,6 +38,8 @@ import json
 import os
 import time
 
+import torch
+
 from server.batched import BatchState
 from server.model import ModelRunner
 from server.paged_cache import kv_bytes_per_token
@@ -173,11 +175,26 @@ def main():
     print(f"\nmeasuring decode throughput  (S={S} ctx tokens, {a.steps} timed "
           f"steps/batch)...")
     sweep = []
+    oom_at = None
     for B in batches:
-        row = time_batch(m, prompt_ids, B, a.steps)
+        try:
+            row = time_batch(m, prompt_ids, B, a.steps)
+        except torch.cuda.OutOfMemoryError:
+            # B*S*S attention at large B outgrows a small GPU; keep the curve we
+            # have (the knee is usually well below the largest B) instead of
+            # losing the whole run.
+            oom_at = B
+            torch.cuda.empty_cache()
+            print(f"  B={B:>4}  OOM — stopping the sweep here, "
+                  f"reporting the {len(sweep)} batches that fit")
+            break
         sweep.append(row)
         print(f"  B={B:>4}  {row['decode_tok_s']:>9.1f} tok/s  "
               f"{row['per_step_ms']:>8.2f} ms/step")
+
+    if not sweep:
+        print("[!] no batch size fit in memory — nothing to report")
+        return
 
     meas_cross, meas_reason = measured_crossover(sweep)
 
@@ -226,6 +243,7 @@ def main():
         "predicted_crossover_batch": pred_cross,
         "measured_crossover_batch": meas_cross,
         "measured_crossover_reason": meas_reason,
+        "oom_at_batch": oom_at,
         "cpu_smoke_test": on_cpu,
         "note": (
             "CPU is not saturably bandwidth-bound; measured crossover need not "

@@ -364,16 +364,25 @@ result. (A draft-model speculator would move with scale; PLD shouldn't.)
 model's one falsifiable claim: decode throughput scales ~linearly with batch up
 to `B* = W / (S · kv_per_tok)`, then flattens as KV bandwidth takes over. The
 study measures where throughput actually knees and compares it to the prediction.
-It only means anything on a GPU — a CPU isn't saturably bandwidth-bound, so the
-measured knee there is noise, and the harness prints that caveat. On a T4 at
-S=2048 (fp16) the model predicts **B\*≈39**. The first GPU run measured B=1/4/8
-at 29/110/142 tok/s (step time 34/36/56 ms — starting to knee) before OOMing at
-B=16, because vLLM's `EngineCore` process was still holding GPU memory from an
-earlier step (ordering since fixed: crossover now runs before vLLM). The partial
-data hints the real knee comes *earlier* than the ideal B\*≈39 — which would make
-sense (kernel-launch and Python overhead eat into the ideal roofline) — but the
-OOM contaminated it, so this one needs a clean re-run before I'll claim a number.
-The honest state: prediction in hand, clean measurement pending.
+It only means anything on a GPU (a CPU isn't saturably bandwidth-bound, so the
+measured knee there is noise, and the harness prints that caveat). On a T4 at
+S=2048 (fp16) the model predicts **B\*≈39**. Measured:
+
+| batch | 1 | 4 | 8 | 16 |
+|---|---|---|---|---|
+| decode tok/s | 29.4 | 110.1 | 142.3 | 140.2 |
+| per-step ms | 34.0 | 36.3 | 56.2 | 114.1 |
+
+Throughput saturates by **B≈8** (142 → 140 while step time doubles 56 → 114 ms),
+roughly 5x earlier than the ideal B\*≈39. That's the expected direction: the
+roofline assumes peak HBM bandwidth and free kernel launches, and the T4 delivers
+neither, so the real knee comes in well short of the analytical one. The sweep
+still OOMs at B=32 on a 15 GB T4 (the B·S·S attention tensor outgrows the card), so
+`crossover_study` now records the batches that fit and stops instead of losing the
+run, and gpu_run.py runs it before vLLM (whose `EngineCore` used to leak GPU memory
+on shutdown and starve this step). Takeaway: prediction gets the mechanism right
+(throughput is KV-bandwidth-bound and flattens), but the measured crossover lands
+far below the ideal, which is the more useful number for sizing a real batch.
 
 ## Serving
 
