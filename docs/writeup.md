@@ -344,23 +344,42 @@ in a regime real servers don't run in.
 real deployment — so the first thing a skeptical reviewer asks is whether the
 findings survive scale. Two experiments answer it, both free on Kaggle.
 
-**Scale axis** (`bench/scale_study.py` / `make scale` / `notebooks/nanoserve_scale.ipynb`)
-reruns the audit at 0.5B / 1.5B / 3B (all fit a free T4). The 0.5B column
-reproduces the known results; the point is the *trend*:
+The most scale-sensitive claim in the whole repo is the one above: speculative
+decoding inverting under batching. Draft-cost-to-target-cost is exactly the ratio
+you'd expect to move with model size, so a skeptic points here first. The cost model
+answers before any GPU runs, because the crossover has a closed form and the inputs
+are all analytical.
 
-| metric | 0.5B | 1.5B | 3B |
+**Predicting the moving crossover** (`bench/scale_predict.py` / `make scale-predict`,
+GPU-free). The spec win→loss crossover is `B = a·B*`, and the roofline crossover
+`B* = W / (S·kv_per_token)` moves with scale — weights grow ~H² (projections, MLP)
+while KV per token grows ~H (kv-heads·head-dim, fixed head count under GQA), so
+`W/KV ~ H` and B\* *rises*:
+
+| | 0.5B | 1.5B | 3B |
 |---|---|---|---|
-| spec tok/forward, generic | 1.07 | — | — |
-| spec tok/forward, grounded | 4.00 | — | — |
-| prefix prefill saved | 40% | — | — |
-| 8-bit KV perplexity Δ | −0.6 | — | — |
-| predicted crossover B* | 39 | — | — |
+| params | 0.494B | 1.544B | 3.086B |
+| B\* (roofline) | 39.3 | 52.6 | 81.7 |
+| spec crossover, generic (a≈0.05) | 2.0 | 2.6 | 4.1 |
+| spec crossover, grounded (a≈0.92) | 36 | 48 | 75 |
 
-(1.5B/3B fill in from the scale notebook.) A useful subtlety: for **prompt-lookup**
-speculation the generic number is driven by whether the text repeats, not by model
-size, so I expect it to stay ~1.0× across the column — which, if it holds, is a
-*stronger* statement of "workload claim, not method claim" than the single-size
-result. (A draft-model speculator would move with scale; PLD shouldn't.)
+The prediction is sharper than "it holds": the generic-prose crossover stays in the
+**single digits (2 → 3 → 4)** across the whole column — far below any real serving
+batch of 16–64 — so "speculation is a net loss on batched generic traffic" doesn't
+just survive scale, it holds by a *wider* margin at 3B. The grounded win extends
+right (36 → 48 → 75). Predicting a moving crossover at three sizes is a stronger
+test than nailing a fixed one once.
+
+**Measuring it** (`bench/scale_study.py` / `make scale` / `notebooks/nanoserve_scale.ipynb`,
+all three fit a free T4) reruns spec-in-batch and the rest of the audit at each size
+to check those predictions. The 0.5B column reproduces the known results (generic
+1.07, grounded 4.00 tok/forward at batch 1); the 1.5B/3B GPU columns are the
+outstanding validation — the predictions above are the falsifiable target they meet
+or break. A useful subtlety: for prompt-lookup speculation the generic acceptance is
+driven by whether the text repeats, not by model size, so it should stay ~1.0× at
+batch 1 across the column (a draft-model speculator would move with scale; PLD
+shouldn't) — which is why holding acceptance fixed across sizes in the prediction is
+itself a claim the measurement tests.
 
 **Roofline crossover** (`bench/crossover_study.py` / `make crossover`) tests the
 model's one falsifiable claim: decode throughput scales ~linearly with batch up
@@ -524,9 +543,11 @@ For an ML-infra / systems screener:
 
 Two fixes sent upstream while working in this space:
 
-- **vLLM** — a real bug fix: `smart_resize` in the Keye model built a `ValueError`
-  from a string literal containing a `{...}` expression with no `f` prefix, so the
-  aspect-ratio guard raised with the literal braces instead of the computed ratio.
+- **vLLM** — a one-line bug fix, and nothing more than that: `smart_resize` in the
+  Keye model raised its aspect-ratio `ValueError` from a string literal with a `{...}`
+  expression but no `f` prefix, so the message printed the literal braces instead of
+  the computed ratio. A real defect on a real code path, but a one-liner — worth being
+  precise about in a repo whose whole point is not overstating results.
   [vllm-project/vllm#49676](https://github.com/vllm-project/vllm/pull/49676).
 - **Hugging Face `accelerate`** — a broken code example and two typos in the
   sequence-parallelism guide (a `ParallelismConfig` snippet used

@@ -58,7 +58,7 @@ checked token-exact against naive before any speed number.
 | KV quantization | 8-bit nearly lossless (ppl 27.9 vs 28.7), 4-bit collapses (443) | `kvquant` |
 | goodput under SLO | continuous sustains ~200x naive's sustainable load | `goodput` |
 | roofline crossover | predicted B* around 39; measured knee at B~4 on a T4 (real overheads pull it ~10x in) | `crossover` |
-| scale axis | rerun the audit at 0.5B / 1.5B / 3B | `scale` |
+| scale axis | cost model predicts the moving crossover (B* 39→53→82; generic spec crossover stays 2→4, so the inversion is robust to scale); GPU columns at 1.5B/3B pending | `scale-predict` / `scale` |
 | chunked prefill | left out; its payoff is tail latency the noise floor would bury | |
 
 ## Running it
@@ -186,6 +186,7 @@ bench/
   trace_compare.py all engines on the real trace
   roofline.py      analytical throughput ceiling + predicted crossover
   crossover_study.py  measured vs predicted decode crossover batch
+  scale_predict.py predicted moving crossover across model size (GPU-free)
   scale_study.py   rerun the audit at 0.5B / 1.5B / 3B
   regression.py    perf-regression gate for CI
   plot.py          sweep grid -> PNGs

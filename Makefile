@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline crossover scale spec spec-batched prefix kvquant goodput noise cancel-chaos audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -86,6 +86,9 @@ noise:
 
 cancel-chaos:
 	python -m bench.cancel_chaos --cycles 3000 --engine --engine-cycles 20 --device $(DEVICE)
+
+scale-predict:
+	python -m bench.scale_predict
 
 all: memory bench plot
 
