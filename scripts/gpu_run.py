@@ -124,6 +124,18 @@ def write_summary(ok):
             lines.append(f"batched spec, {name}: peak {peak:.1f}x vs continuous, {tail}")
         lines.append("")
 
+    sc = _load("results/scale.json")
+    if sc and sc.get("results"):
+        lines.append("scale axis (batch-1 spec tok/forward + predicted B*):")
+        for r in sc["results"]:
+            name = r["model"].split("/")[-1]
+            lines.append(f"  {name:<14} generic {r['spec_generic_tpf']:.2f}  "
+                         f"grounded {r['spec_grounded_tpf']:.2f}  "
+                         f"prefix {r['prefix_saved'] * 100:.0f}%  "
+                         f"8bit-ppl-d {r['ppl_delta_8bit']:+.2f}  "
+                         f"B* {r['predicted_crossover_batch']:.0f}")
+        lines.append("")
+
     for name, path in [("spec", "results/spec.json"), ("prefix", "results/prefix.json"),
                        ("kv_quant", "results/kv_quant.json")]:
         d = _load(path)
@@ -197,6 +209,14 @@ def main():
     ok["roofline"] = step("roofline: predicted vs measured", [
         "bench.roofline", "--mem-bandwidth-gbps", "320", "--peak-tflops", "65",
         "--measured", "results/sweep.json"])
+
+    # 7b. scale axis: rerun the audit slice at 1.5B and 3B (both fit a T4). Light
+    # (batch-1 forwards), and it validates the moving-crossover prediction. Runs
+    # BEFORE vLLM, which leaks GPU memory and would OOM the 3B load.
+    ok["scale"] = step("scale axis: audit at 0.5B / 1.5B / 3B", [
+        "bench.scale_study", "--device", DEV,
+        "--models", "Qwen/Qwen2.5-0.5B", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-3B"],
+        timeout=1800)
 
     # 8. vLLM reference ceiling LAST — its EngineCore can hold GPU memory after it
     ok["vllm"] = step("vLLM reference ceiling", [
