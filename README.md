@@ -81,30 +81,41 @@ docker build -t nanoserve . && docker run --rm -v $(pwd)/results:/app/results na
 
 ## Serving
 
-It runs as an actual HTTP server, not just a benchmark loop. Concurrent clients
-land in one shared queue and the continuous batcher serves them together.
+It runs as an actual HTTP server with a real request lifecycle, not just a
+benchmark loop. Concurrent clients land in one shared queue and the continuous
+batcher serves them together.
 
 ```bash
-python serve.py --engine continuous --port 8000     # --device cpu on Apple Silicon
+python serve.py --engine paged --port 8000 --log    # --device cpu on Apple Silicon
 
 curl -s localhost:8000/healthz
 curl -s localhost:8000/metrics
-curl -s -XPOST localhost:8000/generate -d '{"prompt":"The capital of France is","max_tokens":16}'
+curl -s  -XPOST localhost:8000/generate -d '{"prompt":"The capital of France is","max_tokens":16}'
+curl -sN -XPOST localhost:8000/generate -d '{"prompt":"Tell me a story","max_tokens":64,"stream":true}'
 ```
 
-Backpressure is the part that makes it a server: a request is admitted only while
-`pending + active` is under `--max-queue`. Past that the server sheds load with a
-503 instead of letting the queue grow without bound and wrecking every request's
-latency. `/metrics` is Prometheus text: accepted/completed/shed counts, live queue
-depth, throughput, and p99 TTFT.
+- **Backpressure / load shedding** — a request is admitted only while the queue is
+  under `--max-queue`; past that it's a 503 instead of an unbounded queue. A 20-way
+  burst against a 6-deep queue served 7 and shed 13.
+- **Cancellation on disconnect** — `stream:true` streams tokens over SSE; when a
+  client hangs up, the engine evicts that sequence from the running batch mid-step
+  and returns its KV blocks to the pool. `make cancel-chaos` proves zero block
+  leakage across thousands of abort cycles (allocator stress + the real paged engine
+  killing a random subset of each batch mid-stream).
+- **Timeouts** (`--request-timeout`), **graceful shutdown** (SIGTERM drains
+  in-flight work), and **structured per-request logs** (`--log`: `queued →
+  scheduled → first_token → finished|cancelled|timeout`, traceable by id).
+
+`/metrics` is Prometheus text:
 
 ```
 $ curl -s localhost:8000/metrics
-nanoserve_requests_accepted_total 8
-nanoserve_requests_shed_total 13
+nanoserve_requests_accepted_total 5
+nanoserve_requests_cancelled_total 4
+nanoserve_requests_timed_out_total 0
 nanoserve_queue_depth 0
-nanoserve_throughput_tokens_per_second 24.5
-nanoserve_ttft_p99_ms 413.9
+nanoserve_throughput_tokens_per_second 8.8
+nanoserve_ttft_p99_ms 464.5
 ```
 
 ## The ladder
@@ -130,7 +141,9 @@ Batched, paged, speculative (single-sequence and in-batch), and prefix-cached
 decoding are all checked token-for-token against naive single-sequence decoding
 under greedy, including 1-token prompts, permutation across batch positions, block
 boundaries, and speculative accept/reject. These change speed and memory, not the
-output.
+output. Separately, a chaos harness asserts the KV block pool never leaks under
+cancellation: every block is always either free or in exactly one sequence, across
+thousands of mid-stream abort cycles (`make cancel-chaos`).
 
 ```bash
 python -m pytest -q                                        # fast tests
@@ -163,6 +176,7 @@ bench/
   sweep.py         engine x rate grid -> results/sweep.json
   repeat.py        N-run stats: mean, 95% CI, noise floor
   memory_study.py  KV fragmentation ablation
+  cancel_chaos.py  block-leak chaos harness: cancel/abort cycles, zero-leak invariant
   goodput_study.py req/s meeting a TTFT + TPOT SLO
   spec_study.py    speculative decoding tokens/forward (batch 1)
   spec_batched_study.py  spec-in-batch vs continuous

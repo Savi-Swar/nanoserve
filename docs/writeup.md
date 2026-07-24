@@ -110,10 +110,12 @@ a strict **500ms-TTFT / 50ms-TPOT** SLO, sustainable goodput per engine:
 | continuous | **3.9** |
 | paged | 3.1 |
 
-Continuous sustains **~200x the goodput of naive** under this SLO — a sharper and
-more honest number than "9.6x peak throughput," because it captures that naive
-doesn't just run slower, it blows the latency target on *nearly every request*
-once the queue builds (its p99 TTFT is 50+ seconds). Goodput *rises* with load
+In absolutes: continuous sustains **3.9 req/s** under this SLO, naive essentially
+**0** (it meets the target on almost no request once its queue builds — p99 TTFT
+50+ seconds). The ratio is ~200x, but the absolute is the honest half of the story:
+naive doesn't just run 200x slower, it *fails the latency target on nearly every
+request*, so its usable capacity is roughly nothing rather than a small number. A
+sharper and more honest framing than "9.6x peak throughput." Goodput *rises* with load
 for continuous and collapses for naive and static. That's the shape the papers
 (vLLM, DistServe) optimize for, and it's the case for iteration-level scheduling
 in one table.
@@ -387,19 +389,72 @@ stops rather than losing the run. Takeaway: the model gets the mechanism right
 for sizing a batch is the measured B≈4, not the textbook B\*≈39 — the gap between
 the two *is* the finding.
 
+## Why the cost model nailed it and the roofline missed by 10×
+
+Two predictions in this repo, opposite outcomes. The speculative-decoding cost
+model predicted the win→loss crossover batch and matched the GPU to the batch. The
+roofline predicted the decode crossover at B\*≈39 and the real knee came in at B≈4,
+10x early. That's not luck — it's ratios vs absolutes.
+
+The cost model predicts a **ratio**: speedup = spec throughput / continuous
+throughput, both measured on the same hardware in the same run. Every
+hardware-specific inefficiency — realized HBM bandwidth below the datasheet, kernel
+launch overhead, the cost of scheduling in Python — sits in both the numerator and
+the denominator and cancels. What's left is the relative *work*: committed tokens
+per step versus draft tokens verified per step, a function of acceptance rate and
+batch size and nothing about the machine. So the prediction survives contact with a
+real T4.
+
+The roofline predicts an **absolute**: B\* = W / (S·kv_per_token), which is only as
+good as its hardware constants. It assumes the GPU reaches peak bandwidth and pays
+nothing for launches or Python. A real T4 under pure-Python scheduling does neither,
+so the absolute crossover lands far below the analytical one. The model gets the
+*mechanism* right (decode is KV-bandwidth-bound and flattens); it just can't say
+*where* without constants it doesn't have.
+
+The lesson is cheap to state and easy to forget: predict ratios, not absolutes,
+when you can. A ratio cancels the hardware constants you can't measure; an absolute
+needs all of them. When the two predictions disagreed about how much to trust them,
+the ratio was the one that held.
+
 ## Serving
 
 The scheduler runs behind an HTTP server (`serve.py`, `server/service.py`), not
 just a benchmark harness. Concurrent clients share one queue and the continuous
-batcher serves them together; `POST /generate` blocks until its request finishes.
-The part that makes it a server rather than a loop is backpressure: a request is
-admitted only while `pending + active` is under a limit, and past that the server
-returns 503 instead of letting the queue grow without bound and blowing every
-request's latency. `GET /metrics` exposes Prometheus counters (accepted, completed,
-shed, live queue depth, throughput, p99 TTFT). A 20-way concurrent burst against a
-6-deep queue served 7 and shed 13, and the metrics reflected it. This is basic
-load-shedding, not admission-control research, but it's the difference between a
-server and a for-loop.
+batcher serves them together. What makes it a server rather than a for-loop is the
+request lifecycle:
+
+- **Backpressure / load shedding.** A request is admitted only while the queue is
+  under a limit; past it the server returns 503 instead of letting the queue grow
+  without bound and blowing every request's latency. A 20-way burst against a
+  6-deep queue served 7 and shed 13.
+- **Cancellation on disconnect.** `POST /generate {stream:true}` streams tokens over
+  SSE. When a client hangs up, the next write fails, the handler cancels the
+  request, and the engine evicts that sequence from the running batch *mid-step* and
+  returns its KV blocks to the free list. This reaches straight into the allocator
+  and scheduler: a cancelled sequence has to come out of a batch that's still
+  decoding, and its blocks have to go back without disturbing its neighbours. The
+  chaos harness (`bench/cancel_chaos.py`, `make cancel-chaos`) proves it doesn't
+  leak: an allocator stress aborts sequences at random points over thousands of
+  cycles with a partition invariant checked every step (every block is always either
+  free or in exactly one sequence), and the real paged engine kills a random subset
+  of each batch mid-stream and reclaims the whole pool. Live, four mid-stream
+  disconnects all came back with `queue_depth` at 0.
+- **Streaming backpressure.** Each stream has a bounded token buffer; a client that
+  reads slower than the model generates overflows it and gets shed, rather than
+  back-pressuring the shared batch.
+- **Timeouts.** An optional per-request deadline; the engine evicts on breach (same
+  path as cancellation). A 0.4 s deadline on a 300-token request returns after 3
+  tokens with status `timeout`.
+- **Graceful shutdown.** SIGTERM/SIGINT stops admitting, drains in-flight work
+  within a bounded timeout, flushes metrics, and exits clean — table stakes for a
+  container.
+- **Structured logging.** Each request's lifecycle (`queued → scheduled →
+  first_token → finished|cancelled|timeout`) is traceable by id, so the system is
+  legible from the logs alone.
+
+`GET /metrics` is Prometheus text: accepted / completed / shed / cancelled /
+timed-out counts, live queue depth, a draining flag, throughput, and p99 TTFT.
 
 ## Out of scope (and why)
 
@@ -431,8 +486,11 @@ scheduling, memory management, concurrency, and testing discipline):
 - Built a request scheduler and custom memory allocator for a high-throughput
   serving system: 9.6x throughput over baseline, with a block-based allocator that
   cut memory fragmentation 68% to 4% and tripled concurrent capacity per byte.
-  Exposed it as an HTTP service with backpressure and load shedding (503 past a
-  queue-depth limit) and a Prometheus `/metrics` endpoint.
+  Exposed it as an HTTP service with streaming, backpressure/load shedding, timeouts,
+  and graceful shutdown, plus a Prometheus `/metrics` endpoint.
+- Implemented request cancellation on client disconnect: a hung-up client is evicted
+  from the running batch mid-step and its memory blocks returned to the pool. A
+  chaos harness verified zero block leakage across thousands of abort cycles.
 - Wrote an adversarial correctness oracle that verified byte-identical output
   across all four implementations and a perf-regression gate in CI; the oracle and
   a run-to-run noise floor together invalidated five of my own first-pass results.
@@ -442,8 +500,8 @@ For an ML-infra / systems screener:
 - Built an LLM inference server from scratch (Python/PyTorch, no custom CUDA):
   naive to static to continuous batching to a paged KV cache, 9.6x throughput
   over naive at p99 TTFT 2.0s (from 52s), reaching 16% of vLLM on the same T4;
-  reframed in goodput (req/s meeting a TTFT+TPOT SLO), continuous sustains ~200x
-  naive's sustainable load.
+  reframed in goodput (req/s meeting a 500ms/50ms SLO), continuous sustains 3.9 req/s
+  vs naive's ~0 (~200x).
 - Built speculative decoding *inside* the continuous batch (token-exact) and
   measured that it's a net loss under batching on generic traffic — 3-5x win on
   repetitive text but sliding from 0.97x to 0.40x as the batch grows on generic
@@ -462,10 +520,16 @@ For an ML-infra / systems screener:
   baseline (including 1-token prompts, permutation, and block boundaries), so
   every optimization is shown to change speed or memory, not output.
 
-## Open-source contribution
+## Open-source contributions
 
-While working through the sequence-parallelism material, I found a broken code
-example and two typos in Hugging Face `accelerate`'s docs (a `ParallelismConfig`
-snippet used `sp_seq_length_is_variable: true`, YAML syntax inside a Python call,
-which raises a `SyntaxError` on copy-paste) and sent a fix:
-[huggingface/accelerate#4135](https://github.com/huggingface/accelerate/pull/4135).
+Two fixes sent upstream while working in this space:
+
+- **vLLM** — a real bug fix: `smart_resize` in the Keye model built a `ValueError`
+  from a string literal containing a `{...}` expression with no `f` prefix, so the
+  aspect-ratio guard raised with the literal braces instead of the computed ratio.
+  [vllm-project/vllm#49676](https://github.com/vllm-project/vllm/pull/49676).
+- **Hugging Face `accelerate`** — a broken code example and two typos in the
+  sequence-parallelism guide (a `ParallelismConfig` snippet used
+  `sp_seq_length_is_variable: true`, YAML syntax inside a Python call, a
+  `SyntaxError` on copy-paste).
+  [huggingface/accelerate#4135](https://github.com/huggingface/accelerate/pull/4135).
