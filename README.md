@@ -57,7 +57,7 @@ checked token-exact against naive before any speed number.
 | prefix caching | holds up: 70% of prefill saved on a shared prompt, ~0 without, output identical | `prefix` |
 | KV quantization | 8-bit nearly lossless (ppl 27.9 vs 28.7), 4-bit collapses (443) | `kvquant` |
 | goodput under SLO | continuous sustains ~200x naive's sustainable load | `goodput` |
-| roofline crossover | predicted B* around 39; measured knee at B~8 on a T4 (real overheads pull it ~5x in) | `crossover` |
+| roofline crossover | predicted B* around 39; measured knee at B~4 on a T4 (real overheads pull it ~10x in) | `crossover` |
 | scale axis | rerun the audit at 0.5B / 1.5B / 3B | `scale` |
 | chunked prefill | left out; its payoff is tail latency the noise floor would bury | |
 

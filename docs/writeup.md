@@ -366,23 +366,26 @@ to `B* = W / (S · kv_per_tok)`, then flattens as KV bandwidth takes over. The
 study measures where throughput actually knees and compares it to the prediction.
 It only means anything on a GPU (a CPU isn't saturably bandwidth-bound, so the
 measured knee there is noise, and the harness prints that caveat). On a T4 at
-S=2048 (fp16) the model predicts **B\*≈39**. Measured:
+S=2048 (fp16) the model predicts **B\*≈39**. Measured on a clean T4 (crossover
+runs before vLLM now, so nothing is squatting on GPU memory):
 
 | batch | 1 | 4 | 8 | 16 |
 |---|---|---|---|---|
-| decode tok/s | 29.4 | 110.1 | 142.3 | 140.2 |
-| per-step ms | 34.0 | 36.3 | 56.2 | 114.1 |
+| decode tok/s | 29.2 | 116.0 | 148.2 | 132.6 |
+| per-step ms | 34.3 | 34.5 | 54.0 | 120.7 |
 
-Throughput saturates by **B≈8** (142 → 140 while step time doubles 56 → 114 ms),
-roughly 5x earlier than the ideal B\*≈39. That's the expected direction: the
-roofline assumes peak HBM bandwidth and free kernel launches, and the T4 delivers
-neither, so the real knee comes in well short of the analytical one. The sweep
-still OOMs at B=32 on a 15 GB T4 (the B·S·S attention tensor outgrows the card), so
-`crossover_study` now records the batches that fit and stops instead of losing the
-run, and gpu_run.py runs it before vLLM (whose `EngineCore` used to leak GPU memory
-on shutdown and starve this step). Takeaway: prediction gets the mechanism right
-(throughput is KV-bandwidth-bound and flattens), but the measured crossover lands
-far below the ideal, which is the more useful number for sizing a real batch.
+Scaling is near-perfect to **B=4** (step time flat at ~34 ms, throughput 4x), then
+it saturates fast: B=8 gains only 28% for double the batch, and B=16 actually
+regresses (132 tok/s while step time doubles to 121 ms). The measured knee is
+**B≈4**, roughly 10x below the ideal B\*≈39. Direction as expected but larger than
+I'd have guessed: the roofline assumes peak HBM bandwidth and free kernel launches,
+and a T4 under pure-Python scheduling delivers neither, so the real knee comes in
+far short of the analytical one. The sweep OOMs at B=32 (the B·S·S attention tensor
+outgrows the 15 GB card), so `crossover_study` records the batches that fit and
+stops rather than losing the run. Takeaway: the model gets the mechanism right
+(decode is KV-bandwidth-bound and flattens), but on this hardware the useful number
+for sizing a batch is the measured B≈4, not the textbook B\*≈39 — the gap between
+the two *is* the finding.
 
 ## Serving
 
