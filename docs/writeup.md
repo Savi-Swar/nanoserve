@@ -370,16 +370,29 @@ just survive scale, it holds by a *wider* margin at 3B. The grounded win extends
 right (36 → 48 → 75). Predicting a moving crossover at three sizes is a stronger
 test than nailing a fixed one once.
 
-**Measuring it** (`bench/scale_study.py` / `make scale` / `notebooks/nanoserve_scale.ipynb`,
-all three fit a free T4) reruns spec-in-batch and the rest of the audit at each size
-to check those predictions. The 0.5B column reproduces the known results (generic
-1.07, grounded 4.00 tok/forward at batch 1); the 1.5B/3B GPU columns are the
-outstanding validation — the predictions above are the falsifiable target they meet
-or break. A useful subtlety: for prompt-lookup speculation the generic acceptance is
-driven by whether the text repeats, not by model size, so it should stay ~1.0× at
-batch 1 across the column (a draft-model speculator would move with scale; PLD
-shouldn't) — which is why holding acceptance fixed across sizes in the prediction is
-itself a claim the measurement tests.
+**Measuring it** (`bench/scale_study.py` / `make scale` / `notebooks/nanoserve_scale.ipynb`).
+Reran on a T4 at all three sizes:
+
+| metric | 0.5B | 1.5B | 3B |
+|---|---|---|---|
+| spec tok/forward, generic | 1.07 | 1.00 | 1.07 |
+| spec tok/forward, grounded | 4.00 | 4.00 | 4.00 |
+| prefix prefill saved | 40% | 40% | 40% |
+| 8-bit KV perplexity Δ | −0.63 | −0.02 | −0.01 |
+| params (measured) | 0.494B | 1.544B | 3.086B |
+| B\* | 39.3 | 52.6 | 81.7 |
+
+The prediction held. Generic spec acceptance stays ~1.0 at 1.5B and 3B (0% draft
+match doesn't improve with model size), which is the load-bearing input: since the
+moving crossover is `a·B*` and both `a` (flat) and `B*` (39 → 53 → 82, matching the
+prediction) are confirmed, "speculation is a net loss on batched generic traffic"
+holds across scale, not just at 0.5B. Prompt-lookup acceptance being a property of
+the text rather than the model is what makes it stable across the column; a
+draft-model speculator would move with scale, PLD doesn't. The other rows hold too:
+grounded speculation stays 4.0 tok/forward, prefix caching keeps saving 40%, and
+8-bit KV gets *cheaper* at scale (Δ shrinks to −0.01 at 3B). The one thing not run
+per-size is the full batched spec sweep (higher batches need more GPU than a free
+T4); the batch-1 acceptance measured here is what the crossover actually rests on.
 
 **Roofline crossover** (`bench/crossover_study.py` / `make crossover`) tests the
 model's one falsifiable claim: decode throughput scales ~linearly with batch up

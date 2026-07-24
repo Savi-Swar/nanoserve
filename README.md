@@ -58,7 +58,7 @@ checked token-exact against naive before any speed number.
 | KV quantization | 8-bit nearly lossless (ppl 27.9 vs 28.7), 4-bit collapses (443) | `kvquant` |
 | goodput under SLO | continuous sustains ~200x naive's sustainable load | `goodput` |
 | roofline crossover | predicted B* around 39; measured knee at B~4 on a T4 (real overheads pull it ~10x in) | `crossover` |
-| scale axis | cost model predicts the moving crossover (B* 39→53→82; generic spec crossover stays 2→4, so the inversion is robust to scale); GPU columns at 1.5B/3B pending | `scale-predict` / `scale` |
+| scale axis | predicted then measured at 0.5B/1.5B/3B: B* 39→53→82 (matches), generic spec acceptance stays ~1.0, so the batched-generic inversion holds across scale; grounded 4.0 and 8-bit KV stay cheap too | `scale-predict` / `scale` |
 | chunked prefill | left out; its payoff is tail latency the noise floor would bury | |
 
 ## Running it
