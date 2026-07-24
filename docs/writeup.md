@@ -458,3 +458,11 @@ For an ML-infra / systems screener:
   prefix-cached decoding are all verified token-for-token against a naive
   baseline (including 1-token prompts, permutation, and block boundaries), so
   every optimization is shown to change speed or memory, not output.
+
+## Open-source contribution
+
+While working through the sequence-parallelism material, I found a broken code
+example and two typos in Hugging Face `accelerate`'s docs (a `ParallelismConfig`
+snippet used `sp_seq_length_is_variable: true`, YAML syntax inside a Python call,
+which raises a `SyntaxError` on copy-paste) and sent a fix:
+[huggingface/accelerate#4135](https://github.com/huggingface/accelerate/pull/4135).
