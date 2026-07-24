@@ -1,5 +1,5 @@
-"""Reproduce the headline finding: run every engine on the real Azure trace at
-natural load and under a burst, print both tables, write results/trace.json.
+"""Run every engine on the real Azure trace at natural load and under a burst,
+print both tables, write results/trace.json.
 
     python -m bench.trace_compare --device cpu --n 32 --len-scale 16
 
@@ -49,7 +49,7 @@ def main():
     a = p.parse_args()
 
     if not os.path.exists(TRACE):
-        raise SystemExit(f"missing {TRACE} — see data/README.md to download the Azure trace")
+        raise SystemExit(f"missing {TRACE}; see data/README.md to download the Azure trace")
 
     model = ModelRunner(a.model, device=a.device)
     print(f"loaded {a.model} on {model.device}; warming up...")

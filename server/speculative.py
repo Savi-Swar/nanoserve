@@ -1,18 +1,18 @@
-"""Prompt-lookup speculative decoding (PLD) — the first optimization under
-audit. Model-free speculation: instead of a draft model, guess the next few
-tokens by finding where the last n-gram of the context appeared *earlier* in
-the context and proposing whatever followed it. Verify all guesses in one
-forward pass; accept the longest greedy-matching prefix.
+"""Prompt-lookup speculative decoding (PLD): the first optimization under audit.
+Model-free speculation: instead of a draft model, guess the next few tokens by
+finding where the last n-gram of the context appeared *earlier* in the context
+and proposing whatever followed it. Verify all guesses in one forward pass;
+accept the longest greedy-matching prefix.
 
-Why it's exact: under greedy, we only accept a drafted token when it equals the
-target model's own argmax at that position, and we always emit the target's
-token at the first mismatch. Output is therefore token-identical to naive
-decoding — speculation changes *how many forward passes* it takes, never the
-result. (Checked by the equivalence oracle.)
+Why it's exact: under greedy we only accept a drafted token when it equals the
+target model's own argmax at that position, and always emit the target's token
+at the first mismatch. Output is token-identical to naive decoding; speculation
+changes how many forward passes it takes, never the result. (Checked by the
+equivalence oracle.)
 
-Single-sequence by design: this is the batch-1 regime where the papers report
-2-3x. The audit's finding is what happens to that number under continuous
-batching and on real traffic — measured separately.
+Single-sequence by design: the batch-1 regime where the papers report 2-3x. The
+audit's finding is what happens to that number under continuous batching and on
+real traffic, measured separately.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class SpeculativeEngine(Engine):
         super().__init__(model, on_finish)
         self.ngram = ngram
         self.draft = draft
-        # instrumentation for the finding: tokens emitted per forward pass
+        # instrumentation: tokens emitted per forward pass
         self.forwards = 0
         self.committed = 0
         self.draft_proposed = 0

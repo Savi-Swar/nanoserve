@@ -1,43 +1,40 @@
-"""A second, deliberately *different* workload: a long-context regime.
+"""A second, deliberately different workload: a long-context regime.
 
-The Azure conversational trace (`bench/trace.py`) is a real, heavy-tailed
-workload — but it is heavy-tailed around a fairly *short* context (p50 ~1020
-tokens) with meaningful generated lengths. Serving-wise that trace is
-**decode-dominated**: most wall-clock time is spent in the autoregressive decode
-loop, so it stresses the scheduler's steady-state batching, TPOT, and decode
-throughput.
+The Azure conversational trace (`bench/trace.py`) is a real heavy-tailed
+workload, but heavy-tailed around a short context (p50 ~1020 tokens) with
+meaningful generated lengths. That trace is decode-dominated: most wall-clock
+time is in the autoregressive decode loop, so it stresses the scheduler's
+steady-state batching, TPOT, and decode throughput.
 
-Auditing a system against a single trace risks "one trace = one workload":
-whatever that trace happens to exercise is all you ever measure. Real deployments
-also serve a qualitatively different shape — RAG / document-QA / summarization —
-where each request drags a *large* retrieved context (thousands of tokens) and
-emits only a short answer. That regime is **prefill-dominated** and
-**KV-pressure-heavy**, and it stresses exactly the parts of the system the Azure
-trace barely touches:
+Auditing against a single trace risks "one trace = one workload": whatever it
+exercises is all you measure. Real deployments also serve a different shape,
+RAG / doc-QA / summarization, where each request drags a large retrieved context
+(thousands of tokens) and emits a short answer. That regime is prefill-dominated
+and KV-pressure-heavy, and stresses the parts the Azure trace barely touches:
 
   * Prefill cost. A 2000-token prompt is ~2000 tokens of attention/FFN work
-    *before the first output token*. TTFT is now gated by prefill, not queueing.
-    This is precisely where **chunked prefill** earns its keep — breaking a giant
-    prompt into pieces so it can be interleaved with ongoing decodes instead of
-    stalling the batch head-of-line.
-  * KV-cache footprint. KV memory scales with *context* length, and long
-    contexts fill the cache far faster than short conversational turns. This is
-    where a **paged KV cache** matters most: without paging, a few long prompts
-    fragment and waste the block pool; with it, the same pool admits many more
-    concurrent long requests. High KV pressure also triggers admission control /
-    preemption paths that the short Azure trace rarely reaches.
-  * Output-bound-ness inverts. Short outputs (mean ~64) mean the decode loop is
-    brief, so the *ratio* of prefill work to decode work is high — the mirror
-    image of the conversational trace.
+    before the first output token, so TTFT is gated by prefill, not queueing.
+    This is where chunked prefill earns its keep: break a giant prompt into
+    pieces so it interleaves with ongoing decodes instead of stalling the batch
+    head-of-line.
+  * KV-cache footprint. KV memory scales with context length, so long contexts
+    fill the cache far faster than short conversational turns. This is where a
+    paged KV cache matters most: without paging, a few long prompts fragment and
+    waste the block pool; with it, the same pool admits many more concurrent long
+    requests. High KV pressure also hits admission-control / preemption paths the
+    short Azure trace rarely reaches.
+  * Output-bound-ness inverts. Short outputs (mean ~64) mean a brief decode loop,
+    so the ratio of prefill to decode work is high, the mirror image of the
+    conversational trace.
 
-Concretely: contexts are drawn heavy-tailed (lognormal) around `mean_ctx`, output
-lengths heavy-tailed around a small `mean_out`, and arrivals are Poisson at
-`rate`. Prompt *content* is irrelevant to serving performance — only lengths and
-arrival timing are — so, exactly like `trace.py`, each prompt is synthesized as
+Contexts are drawn heavy-tailed (lognormal) around `mean_ctx`, output lengths
+heavy-tailed around a small `mean_out`, arrivals Poisson at `rate`. Prompt
+content is irrelevant to serving performance (only lengths and arrival timing
+matter), so, like `trace.py`, each prompt is synthesized as
 `[FILLER_TOKEN] * ctx_len`.
 
-The public surface mirrors `bench/trace.py` so this drops straight into the
-existing `replay()` / engine harness:
+The public surface mirrors `bench/trace.py` so this drops into the existing
+`replay()` / engine harness:
 
     reqs, offsets = build_longcontext_requests(n=256, mean_ctx=2000, mean_out=64)
     # ... same (list[Request], offsets) shape as build_trace_requests(...)
@@ -59,10 +56,10 @@ FILLER_TOKEN = 1000  # any benign in-vocab id; content is irrelevant to timing
 
 def _lognormal_lengths(rng: random.Random, n: int, mean: float, spread: float,
                        lo: int = 1) -> list[int]:
-    """`n` positive integer lengths that are heavy-tailed (lognormal) with the
-    given arithmetic `mean`. `spread` is the sigma of the underlying normal in
-    log-space: larger sigma => heavier tail. We solve for mu so that the
-    lognormal's *mean* equals the requested `mean` (E[X] = exp(mu + sigma^2/2)).
+    """`n` positive integer lengths, heavy-tailed (lognormal) with the given
+    arithmetic `mean`. `spread` is the sigma of the underlying log-space normal:
+    larger sigma => heavier tail. Solve for mu so the lognormal's mean equals the
+    requested `mean` (E[X] = exp(mu + sigma^2/2)).
     """
     sigma = max(1e-6, spread)
     mu = math.log(max(1e-9, mean)) - 0.5 * sigma * sigma
@@ -85,11 +82,11 @@ def build_longcontext_requests(
     ----------
     n           number of requests to generate.
     mean_ctx    arithmetic mean prompt/context length in tokens (heavy-tailed
-                around it via lognormal). Default 2000 — far above the Azure
+                around it via lognormal). Default 2000, far above the Azure
                 conversational p50 (~1020).
     ctx_spread  sigma of the log-space normal for contexts; larger => heavier
                 tail (a few very long documents).
-    mean_out    arithmetic mean generated (output) length — short by design.
+    mean_out    arithmetic mean generated (output) length; short by design.
     out_spread  sigma of the log-space normal for outputs.
     rate        Poisson arrival rate (requests/sec); exponential inter-arrival
                 gaps, exactly like the uniform synthetic and the trace's timing.
@@ -119,7 +116,7 @@ def build_longcontext_requests(
 
 
 def effective_rate(offsets: list[float]) -> float:
-    """Realized arrival rate (requests/sec) — same helper as `trace.py`."""
+    """Realized arrival rate (requests/sec); same helper as `trace.py`."""
     span = offsets[-1] - offsets[0]
     return len(offsets) / span if span > 0 else float(len(offsets))
 
@@ -139,9 +136,9 @@ def _percentiles(values: list[int], ps=(50, 90, 99)) -> dict[int, float]:
 def describe(requests: list[Request]) -> dict:
     """Summarize the generated length distribution.
 
-    Returns a dict with context/output length percentiles (p50/p90/p99), means,
-    and max — the same numbers the CLI prints, exposed programmatically so the
-    audit harness can assert on the regime it is actually testing.
+    Returns context/output length percentiles (p50/p90/p99), means, and max: the
+    same numbers the CLI prints, exposed programmatically so the audit harness
+    can assert on the regime it's testing.
     """
     ctx = [len(r.prompt_ids) if r.prompt_ids is not None else 0 for r in requests]
     out = [r.sampling.max_tokens for r in requests]
@@ -161,7 +158,7 @@ def describe(requests: list[Request]) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Generate and inspect a synthetic long-context "
-                    "(RAG / doc-QA) workload — a prefill-dominated, "
+                    "(RAG / doc-QA) workload: a prefill-dominated, "
                     "KV-pressure-heavy regime distinct from the decode-dominated "
                     "Azure conversational trace.")
     ap.add_argument("--n", type=int, default=256)
@@ -186,10 +183,10 @@ def main() -> None:
     print(f"  target arrival rate : {args.rate:.2f} req/s "
           f"(realized {effective_rate(offsets):.2f} req/s)")
     print(f"  span               : {offsets[-1]:.2f} s")
-    print("  context tokens (prompt) — heavy-tailed, prefill-dominated:")
+    print("  context tokens (prompt), heavy-tailed, prefill-dominated:")
     print(f"    p50={c['p50']:.0f}  p90={c['p90']:.0f}  p99={c['p99']:.0f}  "
           f"mean={c['mean']:.0f}  max={c['max']:.0f}")
-    print("  output tokens (generated) — short by design:")
+    print("  output tokens (generated), short by design:")
     print(f"    p50={o['p50']:.0f}  p90={o['p90']:.0f}  p99={o['p99']:.0f}  "
           f"mean={o['mean']:.0f}  max={o['max']:.0f}")
 

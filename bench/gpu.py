@@ -1,7 +1,6 @@
-"""Optional GPU utilization sampler. Polls nvidia-smi in a background thread
-and reports mean/peak SM utilization over the run. No-ops (returns None) when
-there's no NVIDIA GPU — e.g. on the Mac dev box — so the harness is portable
-and only produces util numbers where they actually mean something.
+"""Optional GPU utilization sampler. Polls nvidia-smi in a background thread,
+reports mean/peak SM utilization over the run. No-ops (returns None) with no
+NVIDIA GPU (e.g. the Mac dev box), so the harness stays portable.
 """
 from __future__ import annotations
 

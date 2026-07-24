@@ -1,12 +1,11 @@
-"""Audit row #3 — KV cache quantization. Memory vs quality tradeoff.
+"""Audit row #3: KV cache quantization. Memory vs quality tradeoff.
 
-Deterministic axes: memory factor (32/bits vs an fp32 cache; 16/bits vs fp16)
-and quality measured as **teacher-forced top-1 agreement** with the fp32-KV
-model — at each step we feed the *same* reference token and ask whether the
-quantized-KV model's argmax still matches fp32's. This deliberately avoids
-free-running token-match, which cascades (one early flip marks every later
-token "different" even when the text is fine) and wildly overstates the damage.
-Per-step agreement is the honest quality signal.
+Deterministic axes: memory factor (32/bits vs fp32 cache; 16/bits vs fp16) and
+quality as teacher-forced top-1 agreement with the fp32-KV model: at each step
+feed the same reference token, check whether the quantized-KV argmax still
+matches fp32's. Avoids free-running token-match, which cascades (one early flip
+marks every later token "different" even when the text is fine) and overstates
+the damage.
 
     python -m bench.kv_quant_study
 """
@@ -22,8 +21,8 @@ import torch
 from server.kv_quant import quantize_cache
 from server.model import ModelRunner
 
-# A held-out English passage for perplexity (a real quality metric, unlike
-# top-1 agreement which is a proxy a reviewer will poke at).
+# Held-out passage for perplexity: a real quality metric, vs top-1 agreement
+# which is just a proxy.
 PPL_TEXT = (
     "The transformer processes a sequence in parallel with self-attention, where "
     "each token attends to every earlier token to build a contextual representation. "
@@ -58,7 +57,7 @@ def fp32_tokens(m, prompt, n):
 def perplexity(m, ids, bits):
     """Teacher-forced perplexity of `ids` with the KV cache quantized to `bits`
     (bits=None = fp16 baseline). Lower is better; the fp16-vs-quantized gap is
-    the real quality cost of the quantizer."""
+    the quality cost of the quantizer."""
     logits, cache, cur = m.prefill(ids[:1])
     if bits:
         quantize_cache(cache, bits)
@@ -116,8 +115,8 @@ def main():
         print(f"{bits:<6}{16/bits:>5.1f}x{'':<7}{acc*100:>7.1f}%{'':<5}"
               f"{ppl:>8.2f}{'':<5}{ppl - ppl_fp16:>+7.2f}")
     print("-" * 58)
-    print("perplexity is the metric a reviewer trusts; top-1 agreement is the fast "
-          "proxy. 8-bit KV should barely move perplexity, low bits should blow it up.")
+    print("perplexity is the real metric; top-1 agreement is the fast proxy. "
+          "8-bit KV should barely move perplexity, low bits should blow it up.")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w") as f:

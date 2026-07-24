@@ -1,5 +1,5 @@
-"""Turn a list of finished Requests into the numbers that tell the story:
-throughput, TTFT tail, end-to-end latency tail, queue delay, GPU util.
+"""Turn finished Requests into metrics: throughput, TTFT tail, end-to-end
+latency tail, queue delay, GPU util.
 """
 from __future__ import annotations
 

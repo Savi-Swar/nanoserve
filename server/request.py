@@ -24,7 +24,7 @@ class Request:
     prompt_ids: list[int] | None = None  # pre-tokenized (trace replay uses exact lengths)
 
     def input_ids(self, model) -> list[int]:
-        """Token ids for this request — pre-tokenized if supplied (trace
+        """Token ids for this request: pre-tokenized if supplied (trace
         replay), else encode the prompt text."""
         return self.prompt_ids if self.prompt_ids is not None else model.encode(self.prompt)
 
@@ -71,8 +71,8 @@ class Request:
 
     @property
     def tpot(self) -> float:
-        """Time per output token (seconds) — the inter-token latency a user
-        feels once streaming starts. The p99 of this is a standard SLO."""
+        """Time per output token (seconds): inter-token latency the user feels
+        once streaming starts. The p99 of this is a standard SLO."""
         gen = self.finish_time - self.first_token_time
         n = self.num_output - 1
         return gen / n if n > 0 else 0.0

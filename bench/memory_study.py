@@ -1,10 +1,10 @@
 """Fragmentation ablation: how much KV memory each cache layout wastes on a
-realistic, length-skewed batch — and how many more sequences paging lets you
-hold under a fixed budget (which is what turns into throughput).
+length-skewed batch, and how many more sequences paging fits under a fixed
+budget (which is what turns into throughput).
 
-Runs standalone (no GPU/model needed): sequence lengths are simulated and the
-paged column uses the *real* BlockAllocator, not a formula. Defaults to
-Qwen2.5-0.5B fp16 KV size (12,288 B/token); pass --bytes-per-token to change.
+Standalone (no GPU/model): lengths are simulated, the paged column uses the real
+BlockAllocator, not a formula. Defaults to Qwen2.5-0.5B fp16 KV size
+(12,288 B/token); pass --bytes-per-token to change.
 
     python -m bench.memory_study --n 64 --block-size 16 --mean-out 128
 """
@@ -23,9 +23,9 @@ MIB = 1024 * 1024
 
 
 def simulate_lengths(n: int, seed: int, mean_out: int, max_len: int) -> list[int]:
-    """Current length of each concurrent sequence: a short prompt plus a
-    partially-generated, exponentially-distributed output (heavy length skew —
-    the regime where layout actually matters)."""
+    """Current length of each concurrent sequence: short prompt plus a
+    partially-generated, exponentially-distributed output. Heavy length skew,
+    the regime where layout matters."""
     rng = random.Random(seed)
     lens = []
     for _ in range(n):
@@ -37,13 +37,13 @@ def simulate_lengths(n: int, seed: int, mean_out: int, max_len: int) -> list[int
 
 def study(lens: list[int], block_size: int, max_len: int, bpt: int) -> dict:
     n = len(lens)
-    stored = sum(lens)  # tokens that genuinely need KV
+    stored = sum(lens)  # tokens that need KV
 
     reserve_slots = n * max_len          # reserve-to-max (pre-paging systems)
     padded_slots = n * max(lens)         # pad to the batch's longest (static/cont.)
 
-    # size the pool to exactly what this batch needs (never runs dry); a huge
-    # num_blocks would materialize a huge free list for no reason.
+    # size the pool to exactly what this batch needs; a huge num_blocks would
+    # materialize a huge free list for nothing.
     needed = sum(math.ceil(l / block_size) for l in lens)
     alloc = BlockAllocator(num_blocks=needed, block_size=block_size)
     for i, l in enumerate(lens):

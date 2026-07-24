@@ -1,17 +1,17 @@
 """Replay a real Azure LLM inference trace instead of synthetic uniform load.
 
-Real traffic is nothing like `poisson arrivals + 512-token prompts`: prompt
-lengths are heavy-tailed, output lengths are unpredictable, arrivals are
-bursty. The trace carries per-request arrival time, context (prompt) token
-count, and generated token count. Prompt *content* doesn't affect serving
-performance — only lengths and arrival timing do — so we synthesize a prompt of
-the exact context length from a filler token.
+Real traffic looks nothing like poisson arrivals + fixed 512-token prompts:
+prompt lengths are heavy-tailed, output lengths unpredictable, arrivals bursty.
+The trace carries per-request arrival time, context (prompt) token count, and
+generated token count. Prompt content doesn't affect serving performance, only
+lengths and arrival timing, so we synthesize a prompt of the right context
+length from a filler token.
 
 Trace: Azure/AzurePublicDataset -> data/azure_llm_conv.csv
 columns: TIMESTAMP, ContextTokens, GeneratedTokens.
 
-`len_scale` divides both lengths so the heavy-tailed *shape* is preserved but
-the run is CPU-feasible; use len_scale=1 on a GPU for the real thing.
+`len_scale` divides both lengths so the heavy-tailed shape survives but the run
+is CPU-feasible; use len_scale=1 on a GPU for the real thing.
 """
 from __future__ import annotations
 

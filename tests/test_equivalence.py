@@ -1,8 +1,8 @@
 """Equivalence oracle: every batched/paged engine must decode token-for-token
-identically to naive single-sequence decoding under greedy. This is what makes
-"batching is an optimization, not an approximation" a checked claim, not a hope.
+identically to naive single-sequence decoding under greedy. Makes "batching is
+an optimization, not an approximation" a checked claim.
 
-Loads the model, so it is guarded — run explicitly with:
+Loads the model, so it's guarded. Run with:
     RUN_SLOW=1 python -m pytest tests/test_equivalence.py -q
 """
 import os

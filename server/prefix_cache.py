@@ -1,16 +1,16 @@
 """Prefix caching (RadixAttention's core idea, simplified).
 
-Requests that share a leading prefix — a system prompt, few-shot examples, a
-shared document — recompute that prefix's KV every time under naive serving.
-Since KV for a token depends only on the tokens before it (and absolute RoPE
-positions), the KV of a shared prefix is *identical* across requests and can be
+Requests that share a leading prefix (a system prompt, few-shot examples, a
+shared document) recompute that prefix's KV every time under naive serving.
+Since a token's KV depends only on the tokens before it (and absolute RoPE
+positions), a shared prefix's KV is identical across requests and can be
 computed once and reused. This engine caches prefix KV and prefills only each
 request's novel suffix.
 
-Deterministic metric: prefill tokens actually computed vs the total prompt
-tokens. That ratio doesn't depend on CPU timing, so it's a clean audit number.
-Exactness: reusing the prefix KV must yield output token-identical to a full
-prefill (checked against naive).
+Deterministic metric: prefill tokens actually computed vs total prompt tokens.
+That ratio doesn't depend on CPU timing, so it's a clean audit number.
+Exactness: reused prefix KV must yield output token-identical to a full prefill
+(checked against naive).
 """
 from __future__ import annotations
 

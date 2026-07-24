@@ -1,38 +1,37 @@
 """Performance-regression gate for CI.
 
 CI runners have no GPU and pulling a ~1 GB model per PR is wasteful, so the gate
-does NOT run the real engine. Instead it runs a fast, deterministic *proxy* built
-from the two things that don't need a model:
+doesn't run the real engine. It runs a fast, deterministic proxy built from the
+two things that need no model:
 
-  1. The fragmentation ablation metrics (`bench.memory_study`): paged KV
-     fragmentation fraction and paged capacity under a fixed budget. These are
-     pure functions of a seeded, simulated workload + the real BlockAllocator,
-     so they are bit-for-bit reproducible across machines — a *correctness*
-     signal for the paged allocator's packing behaviour.
+  1. Fragmentation ablation metrics (`bench.memory_study`): paged KV
+     fragmentation fraction and paged capacity under a fixed budget. Pure
+     functions of a seeded simulated workload + the real BlockAllocator, so
+     they're bit-for-bit reproducible across machines: a correctness signal for
+     the paged allocator's packing behaviour.
 
   2. A micro-benchmark of the pure-Python BlockAllocator hot path
-     (add_seq / append_token / free_seq): allocator throughput in ops/sec. This
-     is a *timing* signal, so it is noisy on shared runners and gets a wider
-     band.
+     (add_seq / append_token / free_seq): allocator throughput in ops/sec. A
+     timing signal, so it's noisy on shared runners and gets a wider band.
 
 The gate compares the current proxy against a committed baseline and fails if a
 metric regresses beyond its threshold:
 
-  * fragmentation increased  > 3 %  relative   (tight — deterministic)
-  * paged capacity dropped   > 3 %             (tight — deterministic)
-  * alloc ops/sec dropped    > 15 %            (loose — timing is noisy)
+  * fragmentation increased  > 3 %  relative   (tight, deterministic)
+  * paged capacity dropped   > 3 %             (tight, deterministic)
+  * alloc ops/sec dropped    > 15 %            (loose, timing is noisy)
 
 Usage:
     python -m bench.regression --update-baseline   # write results/baseline.json
     python -m bench.regression --check             # gate against the baseline
 
-Note on the deterministic metrics: `bench.memory_study.study()` sizes its pool
-at num_blocks=1e9, which allocates a billion-entry free list (tens of GB, tens
-of seconds) — fine on a big dev box, an OOM risk on a 16 GB CI runner. The
+On the deterministic metrics: `bench.memory_study.study()` sizes its pool at
+num_blocks=1e9, allocating a billion-entry free list (tens of GB, tens of
+seconds): fine on a big dev box, an OOM risk on a 16 GB CI runner. The
 fragmentation numbers don't depend on the pool being that large, only on it
-being large enough never to run dry, so we recompute the *same* metric with a
-right-sized allocator. The result is identical to memory_study's output (verified
-against results/memory.json) while staying instant and memory-cheap.
+never running dry, so we recompute the same metric with a right-sized allocator.
+Identical to memory_study's output (verified against results/memory.json) while
+staying instant and memory-cheap.
 """
 from __future__ import annotations
 
@@ -78,7 +77,7 @@ def paged_fragmentation() -> float:
     """Paged KV fragmentation fraction on the seeded length-skewed batch.
 
     Recomputes memory_study.study()['strategies']['paged']['frag'] with a
-    right-sized pool — bit-identical, but without the 1e9-block allocation."""
+    right-sized pool: bit-identical, without the 1e9-block allocation."""
     lens = simulate_lengths(N_SEQS, SEED, MEAN_OUT, MAX_LEN)
     stored = sum(lens)
     num_blocks = sum(max(1, math.ceil(l / BLOCK_SIZE)) for l in lens)
@@ -180,7 +179,7 @@ def update_baseline(path: str = BASELINE_PATH) -> dict:
 
 def check(path: str = BASELINE_PATH) -> int:
     if not os.path.exists(path):
-        print(f"FAIL: no baseline at {path} — run --update-baseline first.")
+        print(f"FAIL: no baseline at {path}; run --update-baseline first.")
         return 1
 
     with open(path) as f:

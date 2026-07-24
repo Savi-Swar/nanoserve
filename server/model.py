@@ -1,8 +1,8 @@
-"""Thin wrapper over a HF causal LM exposing the two primitives every
-serving engine is built from: prefill and single-step decode.
+"""Thin wrapper over a HF causal LM exposing the two primitives every serving
+engine is built from: prefill and single-step decode.
 
-The batched engine (week 3) generalizes exactly these two calls, so keeping
-them explicit here is deliberate — it's the seam the whole project pivots on.
+The batched engine generalizes exactly these two calls, so they're kept
+explicit here.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class ModelRunner:
 
     @torch.no_grad()
     def decode_many(self, tokens: list[int], cache, cur: int):
-        """Forward several tokens at once against the cache — the verification
+        """Forward several tokens at once against the cache: the verification
         step of speculative decoding. Returns (logits[len,vocab], cache, new_len)
         where logits[i] predicts the token that follows tokens[i]."""
         n = len(tokens)
@@ -98,7 +98,7 @@ class ModelRunner:
         return cache
 
     def sync(self):
-        """Block until queued device work is done — required before timing."""
+        """Block until queued device work is done; required before timing."""
         if self.device == "cuda":
             torch.cuda.synchronize()
         elif self.device == "mps":

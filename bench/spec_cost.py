@@ -1,75 +1,70 @@
-"""Analytical cost model for SPECULATIVE DECODING vs batch size — predict, on
-the back of an envelope, the batch size at which drafting flips from a win to a
-net loss, so a measured batched-spec engine has a yardstick to beat.
+"""Analytical cost model for speculative decoding vs batch size. Predicts the
+batch at which drafting flips from a win to a net loss, so a measured
+batched-spec engine has a yardstick to beat.
 
-The physics in one paragraph
-----------------------------
-Speculative decoding trades extra COMPUTE for fewer sequential model FORWARDS.
-A plain decode step advances every one of the B rows by exactly one token, so
-it processes B tokens. A speculative step first drafts `g` extra candidate
-tokens per row (cheaply, with a small drafter or a prompt-lookup table), then
-verifies all of them in a single big forward that processes B*(1+g) tokens.
-Verification accepts a prefix of the draft: with per-token acceptance rate
-`a` (0..1), each row commits, in expectation,
+Speculative decoding trades extra compute for fewer sequential model forwards.
+A plain decode step advances each of the B rows by one token, processing B
+tokens. A speculative step first drafts `g` extra candidate tokens per row
+(cheaply, with a small drafter or a prompt-lookup table), then verifies them all
+in one big forward that processes B*(1+g) tokens. Verification accepts a prefix
+of the draft: with per-token acceptance rate `a` (0..1), each row commits, in
+expectation,
 
     tokens_committed_per_step = 1 + a*g          (the +1 is the always-correct
-                                                  "bonus" token from the verify
+                                                  bonus token from the verify
                                                   pass; a*g are accepted drafts)
 
-So the *benefit* of a spec step is 1 + a*g committed tokens instead of 1.
+So the benefit of a spec step is 1 + a*g committed tokens instead of 1.
 
-The *cost* of that step — relative to a plain decode — depends on which side of
-the roofline the batch sits on (see bench/roofline.py). A decode step is a
-memory-copy of the model weights out of HBM; arithmetic is nearly free until
-the batch is large enough to saturate the compute units.
+The cost of that step, relative to a plain decode, depends on which side of the
+roofline the batch sits on (bench/roofline.py). A decode step is a memory-copy
+of the weights out of HBM; arithmetic is nearly free until the batch saturates
+the compute units.
 
-  * WEIGHT-BOUND regime (small B, below the roofline crossover B*): the step is
-    dominated by streaming the weights from HBM once. The B*(1+g) tokens all
-    ride along on that single weight read essentially for free, so processing
-    (1+g)x more tokens barely changes the step time:   cost_factor ~= 1.
+  * weight-bound (small B, below the roofline crossover B*): the step is
+    dominated by streaming the weights once. The B*(1+g) tokens ride along on
+    that single weight read essentially for free, so processing (1+g)x more
+    tokens barely changes step time: cost_factor ~= 1.
 
-  * COMPUTE-BOUND regime (large B, past B*): the ALUs are the bottleneck and
-    step time scales with the number of tokens processed, so drafting g extra
-    tokens per row genuinely costs (1+g)x the FLOPs:    cost_factor ~= (1+g).
+  * compute-bound (large B, past B*): the ALUs bottleneck and step time scales
+    with tokens processed, so drafting g extra tokens per row costs (1+g)x the
+    FLOPs: cost_factor ~= (1+g).
 
-We interpolate linearly between the two roofs using the same crossover batch
-B* the roofline model predicts (B* = W / (S * kv_bytes_per_token); see
-bench.roofline.crossover_batch and server.paged_cache.kv_bytes_per_token):
+Interpolate linearly between the roofs using the roofline crossover batch
+B* = W / (S * kv_bytes_per_token) (bench.roofline.crossover_batch,
+server.paged_cache.kv_bytes_per_token):
 
     cost_factor(B) = 1 + g * min(1, B / Bstar)
 
-Putting benefit over cost:
+Benefit over cost:
 
     speedup(B) = (1 + a*g) / cost_factor(B)
                = (1 + a*g) / (1 + g * min(1, B/Bstar))
 
-Speculation is a WIN when speedup(B) > 1 and a net LOSS when speedup(B) < 1.
+Spec wins when speedup(B) > 1, loses when speedup(B) < 1.
 
-The win->loss crossover has a clean closed form. Below B* the denominator is
+The win->loss crossover has a closed form. Below B* the denominator is
 1 + g*B/Bstar, and speedup = 1 exactly when
 
     1 + a*g = 1 + g*(B/Bstar)   =>   B_crossover = a * Bstar.
 
-So spec pays off only for batches below `a * Bstar`, and turns into a tax above
-it. (Past B* itself the step is fully compute-bound, cost_factor = 1+g, and
-speedup = (1+a*g)/(1+g) < 1 for any a<1 — always a loss — consistent with the
-crossover always landing at a*Bstar < Bstar.)
+So spec pays off only for batches below `a * Bstar` and is a tax above it. Past
+B* the step is fully compute-bound, cost_factor = 1+g, and
+speedup = (1+a*g)/(1+g) < 1 for any a<1, consistent with the crossover always
+landing at a*Bstar < Bstar.
 
-Why this matters
-----------------
-The crossover scales with acceptance `a`. Using the project's own measured
-per-token acceptance numbers (bench/spec_study.py, results/spec.json):
+The crossover scales with acceptance `a`. Using this project's measured
+per-token acceptance (bench/spec_study.py, results/spec.json):
 
-  * generic prose  — PLD acceptance ~0  (tokens/forward ~1.0): a*Bstar ~= 0, so
-    spec is a net loss at essentially any batch > 1.
-  * code           — acceptance ~0.52  (tokens/forward ~2.3): wins to mid batch.
-  * grounded/RAG   — acceptance ~0.92  (tokens/forward ~2.7): wins far longer,
+  * generic prose  PLD acceptance ~0  (tokens/forward ~1.0): a*Bstar ~= 0, spec
+    is a net loss at essentially any batch > 1.
+  * code           acceptance ~0.52  (tokens/forward ~2.3): wins to mid batch.
+  * grounded/RAG   acceptance ~0.92  (tokens/forward ~2.7): wins far longer,
     almost to B* itself.
 
-That single number — "spec becomes a net loss for batch >= Y" — is what pairs
-with a measured batched-spec engine. This module needs no model download: it
-pulls Qwen2.5-0.5B geometry and the crossover predictor straight from
-bench.roofline.
+That "spec becomes a net loss for batch >= Y" number is what pairs with a
+measured batched-spec engine. No model download: pulls Qwen2.5-0.5B geometry and
+the crossover predictor from bench.roofline.
 """
 from __future__ import annotations
 
@@ -86,8 +81,7 @@ from bench.roofline import (
 )
 
 # Measured per-token acceptance rates from this project (results/spec.json via
-# bench/spec_study.py). Used only to LABEL a given `a` with the regime it most
-# resembles, so the report reads in plain English.
+# bench/spec_study.py). Only used to label a given `a` with its nearest regime.
 MEASURED_REGIMES = [
     (0.00, "generic prose (PLD accept ~0, tok/forward ~1.0)"),
     (0.52, "code (accept ~0.52, tok/forward ~2.3)"),
@@ -97,7 +91,7 @@ MEASURED_REGIMES = [
 
 def default_bstar(seq_len: int = 2048, dtype_bytes: int = 2) -> float:
     """Roofline crossover batch B* for Qwen2.5-0.5B at the given context, fp16.
-    B* = W / (S * kv_bytes_per_token). Comes out ~39 at S=2048."""
+    B* = W / (S * kv_bytes_per_token). ~39 at S=2048."""
     params = estimate_params(QWEN_0_5B)["total"]
     kv_per_tok = kv_bytes_per_token(QWEN_0_5B, dtype_bytes)
     return crossover_batch(params, kv_per_tok, seq_len, dtype_bytes)
@@ -116,8 +110,8 @@ def speedup(B: float, a: float, g: int, bstar: float) -> float:
 
 
 def crossover_batch_spec(a: float, g: int, bstar: float) -> float:
-    """The batch where speedup crosses 1 (win -> loss): closed form a * Bstar.
-    Below it spec wins, above it spec is a net loss."""
+    """Batch where speedup crosses 1 (win -> loss): closed form a * Bstar.
+    Spec wins below, loses above."""
     return a * bstar
 
 
@@ -128,8 +122,8 @@ def regime_label(a: float) -> str:
 
 
 def analyze(a: float, g: int, bstar: float, batches: list[int]) -> dict:
-    """Full prediction for one acceptance rate: per-batch speedup, the closed-
-    form crossover, and the first batch in the sweep that is a net loss."""
+    """Full prediction for one acceptance rate: per-batch speedup, closed-form
+    crossover, and the first batch in the sweep that's a net loss."""
     xover = crossover_batch_spec(a, g, bstar)
     rows = []
     first_loss = None

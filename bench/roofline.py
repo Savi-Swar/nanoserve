@@ -1,43 +1,31 @@
-"""Roofline / analytical cost model — PREDICT throughput before you measure it.
+"""Roofline / analytical cost model. Predict throughput before measuring it.
 
-The point of a roofline model is to know, on the back of an envelope, what the
-hardware *can* do, so that a measured number means something: a run at 40% of
-the ceiling is a scheduling/overhead problem worth chasing; a run at 95% is
-done. Without the ceiling you're flying blind.
+A ceiling makes a measured number mean something: 40% of the roof is a
+scheduling/overhead problem worth chasing, 95% is done.
 
-The physics in one paragraph
-----------------------------
-Every kernel is bounded by one of two resources: how fast the chip can do math
-(peak FLOP/s) or how fast it can move bytes from HBM into the compute units
-(memory bandwidth, GB/s). Which one binds is decided by *arithmetic intensity*
-I = FLOPs / bytes-moved. There is a ridge point I* = peak_flops / bandwidth
-(for an A10, ~125 TFLOP/s / 0.6 TB/s ~= 208 FLOP/byte). Below I* you are
-memory-bound (the ALUs starve waiting for bytes); above it you are compute-
-bound. That's the "roof": a flat bandwidth ceiling that ramps into a flat
+Every kernel is bounded by either compute (peak FLOP/s) or memory bandwidth
+(GB/s moving bytes from HBM into the compute units). Which one binds is set by
+arithmetic intensity I = FLOPs / bytes-moved, against the ridge point
+I* = peak_flops / bandwidth (A10: ~125 TFLOP/s / 0.6 TB/s ~= 208 FLOP/byte).
+Below I* you're memory-bound (ALUs starve waiting for bytes), above it
+compute-bound. That's the roof: a flat bandwidth ceiling ramping into a flat
 compute ceiling at the ridge.
 
-Why autoregressive DECODE is memory-bound
-------------------------------------------
-Decoding one token does a full forward pass but with a sequence length of 1.
-Every weight is read from HBM and used for a single GEMV (matrix x vector) — a
-couple of FLOPs per weight byte. Intensity is ~1-2 FLOP/byte, far below the
-ridge, so decode latency is set entirely by how fast you can stream the weights
-(and the KV cache) out of HBM, not by the math. This is *the* central fact of
-LLM serving: a decode step is a memory-copy of the model, and batching is how
-you amortize that copy across many sequences (the weights are read once and
-reused for all B tokens in the batch).
+Decode is memory-bound. Decoding one token is a full forward pass at sequence
+length 1: every weight is read from HBM for a single GEMV, a couple FLOPs per
+weight byte. Intensity ~1-2 FLOP/byte, far below the ridge, so decode latency
+is set by how fast you stream the weights (and KV cache) out of HBM, not by the
+math. A decode step is a memory-copy of the model; batching amortizes that copy
+across sequences (weights read once, reused for all B tokens).
 
-Why PREFILL is compute-bound
-----------------------------
-Prefilling a P-token prompt multiplies the weights by a P-row matrix, so each
-weight byte is reused P times: intensity ~ P, which for P of a few hundred sits
-above the ridge. Prefill is a big dense GEMM and lives on the compute roof.
-That asymmetry — compute-bound prefill, memory-bound decode — is why serving
-stacks schedule the two phases so differently.
+Prefill is compute-bound. A P-token prompt multiplies the weights by a P-row
+matrix, so each weight byte is reused P times: intensity ~ P, which for a few
+hundred tokens sits above the ridge. Prefill is a dense GEMM on the compute
+roof. That asymmetry is why serving stacks schedule the two phases differently.
 
-This module needs no model download: give it param count + KV bytes/token (or
-let it estimate params from config dims) and it prints the ceilings, a batch
-sweep, and — with --measured — a predicted-vs-measured comparison.
+No model download needed: give it param count + KV bytes/token (or let it
+estimate params from config dims) and it prints the ceilings, a batch sweep,
+and with --measured a predicted-vs-measured comparison.
 """
 from __future__ import annotations
 
@@ -45,9 +33,9 @@ import argparse
 import json
 
 # ---------------------------------------------------------------------------
-# Hardware presets. Bandwidth is HBM read bandwidth (GB/s, 1 GB = 1e9 bytes).
-# Peak FLOP/s is dense fp16/bf16 tensor-core throughput (TFLOP/s). These set
-# the two roofs; everything else is model geometry.
+# Hardware presets. Bandwidth is HBM read (GB/s, 1 GB = 1e9 bytes). Peak FLOP/s
+# is dense fp16/bf16 tensor-core (TFLOP/s). These two set the roofs; the rest is
+# model geometry.
 # ---------------------------------------------------------------------------
 MEM_BW_GBPS = {
     "H100": 3350.0,   # SXM HBM3
@@ -64,8 +52,8 @@ PEAK_TFLOPS = {       # dense fp16 tensor-core, no sparsity
     "CPU": 2.0,
 }
 
-# Qwen2.5-0.5B geometry (from its config.json) — the default so `python -m
-# bench.roofline` runs with no arguments and no model load.
+# Qwen2.5-0.5B geometry (from its config.json). Default so `python -m
+# bench.roofline` runs with no args and no model load.
 QWEN_0_5B = dict(
     name="Qwen2.5-0.5B",
     num_hidden_layers=24,
@@ -86,13 +74,12 @@ GB = 1e9   # bandwidth uses decimal GB (vendor convention)
 # Model geometry -> parameter count and KV bytes/token
 # ---------------------------------------------------------------------------
 def estimate_params(cfg: dict) -> dict:
-    """Count parameters from config dims, properly — including GQA (K/V project
-    to num_kv_heads*head_dim, not hidden), the 3-matrix SwiGLU MLP, and
-    tied-vs-untied embeddings. Returns a breakdown so the estimate is auditable.
+    """Count parameters exactly from config dims: GQA (K/V project to
+    num_kv_heads*head_dim, not hidden), the 3-matrix SwiGLU MLP, tied-vs-untied
+    embeddings. Returns a breakdown so the estimate is auditable.
 
     The folklore "params ~= 12 * layers * hidden^2" assumes intermediate_size =
-    4*hidden and MHA and folds the embedding away; we compute it exactly and
-    print the folklore number alongside for sanity.
+    4*hidden, MHA, and no embedding; printed alongside for sanity.
     """
     L = cfg["num_hidden_layers"]
     H = cfg["hidden_size"]
@@ -106,8 +93,8 @@ def estimate_params(cfg: dict) -> dict:
     q_dim = n_q * hd            # query projection output width
     kv_dim = n_kv * hd          # key/value projection width (smaller under GQA)
 
-    # Per-layer attention: q, k, v, o projections. (Biases/LayerNorms are a
-    # rounding error at this scale; we omit them to keep the count transparent.)
+    # Per-layer attention: q, k, v, o projections. Biases/LayerNorms are a
+    # rounding error at this scale, omitted to keep the count transparent.
     attn = H * q_dim + H * kv_dim + H * kv_dim + q_dim * H
     # Per-layer SwiGLU MLP: gate + up (H->inter) and down (inter->H).
     mlp = H * inter + H * inter + inter * H
@@ -132,10 +119,10 @@ def estimate_params(cfg: dict) -> dict:
 
 
 def kv_bytes_per_token(cfg: dict, dtype_bytes: int = 2) -> int:
-    """KV cache bytes for a single token, summed over all layers:
+    """KV cache bytes for one token, summed over layers:
     2 (K and V) * layers * kv_heads * head_dim * dtype_bytes.
-    Mirrors server.paged_cache.kv_bytes_per_token but works from a plain config
-    dict so no model needs loading."""
+    Mirrors server.paged_cache.kv_bytes_per_token but from a plain config dict,
+    no model load."""
     L = cfg["num_hidden_layers"]
     n_kv = cfg.get("num_key_value_heads", cfg["num_attention_heads"])
     hd = cfg.get("head_dim", cfg["hidden_size"] // cfg["num_attention_heads"])
@@ -143,8 +130,8 @@ def kv_bytes_per_token(cfg: dict, dtype_bytes: int = 2) -> int:
 
 
 def config_from_runner(runner) -> dict:
-    """Pull the same geometry out of a loaded server.model.ModelRunner, so the
-    model does the config for you when you happen to have it in hand."""
+    """Pull the same geometry out of a loaded server.model.ModelRunner, for when
+    you already have one in hand."""
     c = runner.model.config
     n_q = c.num_attention_heads
     return dict(
@@ -164,14 +151,13 @@ def config_from_runner(runner) -> dict:
 # The roofline predictions
 # ---------------------------------------------------------------------------
 def decode_step_latency_s(params, kv_per_tok, B, S, mem_bw_bytes_s, dtype_bytes=2):
-    """Time for ONE decode step (all B sequences advance one token).
+    """Time for one decode step (all B sequences advance one token).
 
-    A decode step must stream out of HBM, once:
+    A decode step streams out of HBM, once:
       (a) every weight             W = params * dtype_bytes
       (b) the KV cache it attends over  = B * S * kv_per_tok
     Compute is negligible (GEMV, intensity ~1), so latency = bytes / bandwidth.
-    The weights are read once no matter how big the batch — that's the whole
-    reason batching helps.
+    Weights are read once regardless of batch size, which is why batching helps.
     """
     W = params * dtype_bytes
     bytes_moved = W + B * S * kv_per_tok
@@ -186,12 +172,12 @@ def decode_throughput_tok_s(params, kv_per_tok, B, S, mem_bw_bytes_s, dtype_byte
 
 
 def crossover_batch(params, kv_per_tok, S, dtype_bytes=2):
-    """The batch size where the KV-cache traffic equals the weight traffic:
+    """Batch size where KV-cache traffic equals weight traffic:
         B * S * kv_per_tok = W = params * dtype_bytes
-    Below it decode is WEIGHT-BOUND — the weight read dominates, so throughput
-    grows ~linearly with B (you're amortizing a fixed W over more tokens).
-    Above it decode is KV-BOUND — KV traffic grows with B*S and cancels the B
-    in the numerator, so throughput saturates and adding batch stops helping.
+    Below it decode is weight-bound: the weight read dominates, so throughput
+    grows ~linearly with B (amortizing a fixed W over more tokens). Above it
+    decode is KV-bound: KV traffic grows with B*S and cancels the B in the
+    numerator, so throughput saturates and more batch stops helping.
     """
     W = params * dtype_bytes
     return W / (S * kv_per_tok)
@@ -199,15 +185,15 @@ def crossover_batch(params, kv_per_tok, S, dtype_bytes=2):
 
 def prefill_latency_s(params, P, peak_flops):
     """Prefill a P-token prompt ~= one forward pass over a P-row activation:
-    ~2 * params * P FLOPs (the 2 is multiply+add). It's a dense GEMM sitting on
-    the COMPUTE roof, so latency = FLOPs / peak_flops."""
+    ~2 * params * P FLOPs (the 2 is multiply+add). Dense GEMM on the compute
+    roof, so latency = FLOPs / peak_flops."""
     return 2 * params * P / peak_flops
 
 
 def arithmetic_intensity(params, kv_per_tok, B, S, dtype_bytes=2):
-    """FLOP per byte for a decode step, and the compute ridge point.
+    """FLOP per byte for a decode step.
     decode FLOPs ~= 2 * params * B (B GEMVs); bytes = W + B*S*kv_per_tok.
-    A tiny intensity (<< ridge) is the signature of a memory-bound kernel."""
+    Tiny intensity (<< ridge) means memory-bound."""
     W = params * dtype_bytes
     flops = 2 * params * B
     bytes_moved = W + B * S * kv_per_tok
@@ -297,14 +283,13 @@ def print_prefill(params, peak_tflops, prompt_lens):
 
 
 def overlay_measured(params, kv_per_tok, mem_bw_gbps, S, B, path, dtype_bytes=2):
-    """Compare the predicted decode ceiling to measured throughput from a
-    bench sweep JSON (schema: {"runs":[{engine,device,rate,throughput,...}]}).
+    """Compare predicted decode ceiling to measured throughput from a bench
+    sweep JSON (schema: {"runs":[{engine,device,rate,throughput,...}]}).
 
-    The measured 'throughput' is whole-run output tok/s; the prediction is the
-    decode ceiling at the given batch B and context S. The gap is the headroom
-    the scheduler/overheads are leaving on the table (measured runs here are
-    CPU, so a large gap is expected — the point is that the model gives you the
-    yardstick)."""
+    Measured 'throughput' is whole-run output tok/s; the prediction is the
+    decode ceiling at batch B, context S. The gap is headroom the
+    scheduler/overheads leave on the table. Runs here are CPU, so a large gap is
+    expected; the model just gives the yardstick."""
     with open(path) as f:
         data = json.load(f)
     runs = data.get("runs", [])
@@ -327,7 +312,7 @@ def overlay_measured(params, kv_per_tok, mem_bw_gbps, S, B, path, dtype_bytes=2)
 # ---------------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(
-        description="Roofline cost model for LLM prefill/decode — predicts "
+        description="Roofline cost model for LLM prefill/decode. Predicts "
                     "throughput ceilings without loading a model.")
     p.add_argument("--params", type=float, default=None,
                    help="param count (e.g. 0.494e9). Default: estimated from the "
@@ -356,7 +341,7 @@ def main():
     mem_bw_gbps = a.mem_bandwidth_gbps or MEM_BW_GBPS[a.device]
     peak_tflops = a.peak_tflops or PEAK_TFLOPS[a.device]
 
-    print(f"### nanoserve roofline model  —  device={a.device}  "
+    print(f"### nanoserve roofline model   device={a.device}  "
           f"dtype={a.dtype_bytes}B\n")
 
     # Params: use the estimate unless overridden.

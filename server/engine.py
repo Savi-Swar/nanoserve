@@ -1,10 +1,9 @@
-"""Serving engines. Week 1 ships the naive baseline; week 2/3 add
-StaticBatchEngine and ContinuousBatchEngine behind the same interface.
+"""Serving engines. Naive baseline plus StaticBatchEngine and
+ContinuousBatchEngine behind the same interface.
 
-All engines run a worker thread that pulls from a thread-safe queue, so the
-load generator (which submits on a real wall clock) is decoupled from how the
-engine chooses to schedule work. That decoupling is the whole point: the only
-thing that changes between naive / static / continuous is the worker loop.
+Each engine runs a worker thread pulling from a thread-safe queue, so the load
+generator (submitting on a real wall clock) is decoupled from how the engine
+schedules. Only the worker loop changes between naive / static / continuous.
 """
 from __future__ import annotations
 
@@ -155,8 +154,8 @@ class NaiveEngine(Engine):
 class StaticBatchEngine(Engine):
     """Collect up to `batch_size` requests (waiting at most `max_wait`), run
     them together, and don't start the next batch until *every* sequence in
-    the current one finishes. Short sequences sit in the batch burning GPU
-    while the longest one finishes — the classic static-batching waste."""
+    the current one finishes. Short sequences sit burning GPU while the longest
+    one finishes: the classic static-batching waste."""
 
     name = "static"
 
@@ -201,8 +200,8 @@ class StaticBatchEngine(Engine):
 class ContinuousBatchEngine(Engine):
     """Iteration-level scheduling. Every decode step: evict whatever finished
     and admit whatever is waiting, up to `max_batch` concurrent sequences. A
-    slot freed by a short request is filled immediately instead of idling —
-    this is the jump that continuous batching buys."""
+    slot freed by a short request is filled immediately instead of idling,
+    which is what continuous batching buys."""
 
     name = "continuous"
 
@@ -283,8 +282,8 @@ class PagedContinuousEngine(Engine):
     """Continuous batching whose KV lives in a paged block pool. Same admit/
     evict scheduling as ContinuousBatchEngine, but admission is gated by the
     block budget: a request waits (backpressure) until the pool can hold its
-    reserved span. Under memory pressure this admits more concurrent sequences
-    than a contiguous cache would — the paged throughput win, in execution."""
+    reserved span. Under memory pressure it admits more concurrent sequences
+    than a contiguous cache would."""
 
     name = "paged"
 

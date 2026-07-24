@@ -1,20 +1,20 @@
-"""The SCALE AXIS — do the audit findings hold beyond the pathological 0.5B?
+"""Scale axis: do the audit findings hold beyond 0.5B?
 
-Every other study in this repo pins one model (Qwen2.5-0.5B) and varies the
-serving knob. The obvious reviewer objection is that 0.5B is a toy: its tiny KV
-cache, its aggressive GQA, its habit of looping on repetitive text could all be
-artifacts of size. This module reruns a small, comparable slice of the audit at
-0.5B / 1.5B / 3B so each finding gets a trend line instead of a single point.
+Every other study here pins one model (Qwen2.5-0.5B) and varies the serving
+knob. The reviewer objection is that 0.5B is a toy: its tiny KV cache, aggressive
+GQA, and habit of looping on repetitive text could all be artifacts of size.
+This reruns a small comparable slice of the audit at 0.5B / 1.5B / 3B so each
+finding gets a trend line instead of a single point.
 
-Nothing here is new physics — it *reuses* the existing studies' logic verbatim:
+No new physics; reuses the existing studies' logic verbatim:
 
   (a) spec decoding tokens/forward, generic vs grounded  -> server.speculative
   (b) prefix-cache prefill_saved on a shared system prompt -> server.prefix_cache
   (c) 8-bit KV perplexity delta vs fp16                   -> bench.kv_quant_study
   (d) predicted weight->KV crossover batch B*             -> bench.roofline
 
-Kept deliberately light (short prompts, few generated tokens) so three model
-sizes finish in a few minutes on a T4.
+Kept light (short prompts, few generated tokens) so three sizes finish in a few
+minutes on a T4.
 
     python -m bench.scale_study --device cuda \
         --models Qwen/Qwen2.5-0.5B Qwen/Qwen2.5-1.5B Qwen/Qwen2.5-3B
@@ -37,16 +37,16 @@ from bench.roofline import estimate_params, config_from_runner, crossover_batch
 # --- fixed, comparable workloads (small on purpose) -------------------------
 
 # (a) speculative decoding. GENERIC = novel prose with no repeated n-grams for
-# prompt-lookup to latch onto; GROUNDED = a repetitive list the model is asked
-# to continue, where the last n-gram has appeared earlier verbatim.
+# prompt-lookup to latch onto; GROUNDED = a repetitive list to continue, where
+# the last n-gram already appeared verbatim.
 SPEC_GENERIC = ("Explain the theory of general relativity in a detailed "
                 "paragraph, describing how mass curves spacetime.")
 SPEC_GROUNDED = ("Repeat this list exactly: alpha beta gamma delta alpha beta "
                  "gamma delta alpha beta gamma delta alpha beta gamma")
 SPEC_N = 32  # tokens generated per prompt
 
-# (b) prefix caching. A shared system prompt, then a second request that reuses
-# it verbatim — prefill_saved is the fraction of prompt tokens we skip.
+# (b) prefix caching. A shared system prompt, then a second request reusing it
+# verbatim; prefill_saved is the fraction of prompt tokens skipped.
 SYSTEM = ("You are a helpful, precise assistant. Read the user's question "
           "carefully, think step by step, and answer concisely and correctly. ")
 PREFIX_PROMPTS = [
@@ -64,10 +64,9 @@ PPL_TEXT = (
     "batch size and the sequence length."
 )
 
-# (d) roofline preset — T4-class HBM bandwidth and the context length the KV
-# cache is sized for. The crossover batch B* = W / (S * kv_per_tok) is actually
-# bandwidth-independent (dtype cancels in the ratio); the bandwidth is recorded
-# only to name the deployment the prediction describes.
+# (d) roofline preset: T4-class HBM bandwidth and the context length the KV
+# cache is sized for. B* = W / (S * kv_per_tok) is bandwidth-independent (dtype
+# cancels in the ratio); the bandwidth only names the deployment described.
 T4_MEM_BW_GBPS = 320.0
 ROOFLINE_SEQ_LEN = 2048
 
@@ -93,7 +92,7 @@ def prefix_saved(m, prompts):
 
 def kv8_ppl_delta(m):
     """fp16-baseline perplexity, 8-bit-KV perplexity, and their gap on a fixed
-    passage. 8-bit KV should barely move it — this checks that holds up-scale."""
+    passage. 8-bit KV should barely move it; this checks that holds up-scale."""
     ids = m.encode(PPL_TEXT)
     ppl_fp16 = perplexity(m, ids, None)
     ppl_8 = perplexity(m, ids, 8)
@@ -101,9 +100,9 @@ def kv8_ppl_delta(m):
 
 
 def predicted_crossover(m):
-    """Roofline B* where KV traffic overtakes the weight read — the batch past
+    """Roofline B* where KV traffic overtakes the weight read: the batch past
     which decode stops scaling. Params from config estimate, KV bytes/token from
-    the paged-cache accounting, both at the model's own dtype (which cancels)."""
+    paged-cache accounting, both at the model's dtype (which cancels)."""
     cfg = config_from_runner(m)
     params = estimate_params(cfg)["total"]
     kv_per_tok = kv_bytes_per_token(m)
@@ -164,7 +163,7 @@ def print_table(results):
         print(f"{label:<{w0}}" + "".join(f"{c:>{wc}}" for c in cells))
 
     print("\n" + "=" * (w0 + wc * len(cols)))
-    print("SCALE AXIS — audit metrics across model sizes")
+    print("SCALE AXIS: audit metrics across model sizes")
     print("=" * (w0 + wc * len(cols)))
     row("metric", cols)
     print("-" * (w0 + wc * len(cols)))

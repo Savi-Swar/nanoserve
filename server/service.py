@@ -5,7 +5,7 @@
     GET  /metrics   Prometheus-style text
     GET  /healthz   200 ok  (503 while draining)
 
-Request lifecycle is the point here, not raw throughput:
+Request lifecycle over raw throughput:
 
 - Backpressure / load shedding: a request is admitted only while the engine
   queue is under a limit; past it the server returns 503 instead of letting the

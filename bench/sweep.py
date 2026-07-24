@@ -1,6 +1,5 @@
 """Run the full engine x arrival-rate grid on ONE loaded model and write
-results/sweep.json for bench.plot. This is the command that produces the
-headline comparison.
+results/sweep.json for bench.plot.
 
     python -m bench.sweep --engines naive static continuous \
         --rates 2 4 8 16 --n 64 --max-tokens 64

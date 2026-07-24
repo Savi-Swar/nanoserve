@@ -1,10 +1,9 @@
-"""Audit row #1 — speculative decoding (prompt-lookup).
+"""Audit row #1: speculative decoding (prompt-lookup).
 
-Measures tokens-per-forward-pass (the deterministic speedup proxy: naive is
-always 1.0) across prompt classes, and asserts spec output is token-identical
-to naive. The finding: the headline speedup is entirely a property of the
-*workload*, not the method — grounded/repetitive text flies, generic
-generation gets nothing.
+Measures tokens-per-forward-pass (the deterministic speedup proxy; naive is
+always 1.0) across prompt classes, and asserts spec output is token-identical to
+naive. The speedup is a property of the workload, not the method: grounded/
+repetitive text flies, generic generation gets nothing.
 
     python -m bench.spec_study
 """

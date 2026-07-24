@@ -1,8 +1,7 @@
-"""Statistical hygiene: run a config N times and report mean +/- 95% CI and the
-noise floor, so an "improvement" smaller than the noise floor is correctly
-called nothing. This is the instrument that makes Month-3 audit claims
-defensible — we watched continuous batching swing 14->23 tok/s run-to-run on
-CPU, so no single number means anything without this.
+"""Run a config N times, report mean +/- 95% CI and the noise floor, so an
+"improvement" smaller than the noise floor is called nothing. Continuous
+batching swung 14->23 tok/s run-to-run on CPU, so no single number means
+anything without this.
 
     # one config, N runs, with error bars + noise floor
     python -m bench.repeat --engine continuous --runs 5 --rate 8 --n 24
@@ -123,7 +122,7 @@ def main():
         verdict = "WITHIN NOISE (not distinguishable)" if overlap else "DISTINGUISHABLE"
         print(f"{B} vs {A}: {diff_pct:+.1f}% throughput -> {verdict}")
         if overlap:
-            print(f"  |{diff:.1f}| <= CI_A+CI_B ({ta.ci:.1f}+{tb.ci:.1f}) — do not claim a winner")
+            print(f"  |{diff:.1f}| <= CI_A+CI_B ({ta.ci:.1f}+{tb.ci:.1f}); do not claim a winner")
     print("=" * 60)
 
 

@@ -1,24 +1,24 @@
-"""Speculative decoding *inside* a continuous batch — the experiment that tests
-whether speculation, a batch-1 win, survives batching.
+"""Speculative decoding *inside* a continuous batch: tests whether speculation,
+a batch-1 win, survives batching.
 
 Each active row drafts its own tokens (prompt-lookup from its own context),
 padded to a common draft length D. One batched forward over B*(1+D) tokens
 verifies all of them; each row accepts the longest greedy-matching prefix and
 commits a *different* number of tokens (1 + accepted). That raggedness is why
 this is built on the paged cache: each row writes its committed tokens to its
-own blocks, so rows growing by different amounts is free — a contiguous batch
-cache can't do that.
+own blocks, so rows growing by different amounts is free, which a contiguous
+batch cache can't do.
 
 Exact under greedy: a row only accepts a drafted token when it equals the target
-model's own argmax at that position, and always emits the target's argmax. Output
-is therefore token-identical to naive — speculation changes the number of forward
+model's own argmax at that position, and always emits the target's argmax.
+Output is token-identical to naive; speculation changes the number of forward
 passes, never the result. (Checked by the equivalence oracle.)
 
 The finding this enables: at batch 1 the extra draft tokens are nearly free
 (memory-bound step, spare compute) so speculation wins; as the batch grows past
 the roofline crossover the step is compute-bound and the drafts cost real time,
 so on low-acceptance (generic) traffic speculation becomes a net loss. Measure
-tokens/forward AND wall-clock vs the plain continuous engine across load.
+tokens/forward and wall-clock vs the plain continuous engine across load.
 """
 from __future__ import annotations
 

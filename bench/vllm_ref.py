@@ -1,21 +1,17 @@
 """Reference-ceiling harness: run the benchmark workload through vLLM.
 
-This is the *reference ceiling* for the from-scratch engine in this repo. It
-drives the EXACT same open-loop Poisson workload (bench/workload.py) through
-vLLM's production continuous-batching engine and reports the same metrics
-(bench/metrics.py), so a plot can put "our engine" next to "what a mature
-system does on this box." If our engine lands within a sensible fraction of
-this line, the from-scratch implementation is doing its job.
+Drives the same open-loop Poisson workload (bench/workload.py) through vLLM's
+continuous-batching engine and reports the same metrics (bench/metrics.py), so a
+plot can put our engine next to a mature system on the same box. Landing within
+a sensible fraction of this line means the from-scratch engine is doing its job.
 
 Why AsyncLLMEngine and not LLM.generate:
-    The offline `LLM.generate(prompts)` batch API takes a *list* up front and
-    schedules it however it likes. That erases arrival timing entirely, so it
-    cannot model an open-loop Poisson load and cannot measure a real TTFT tail
-    under queueing. We instead use the async, streaming AsyncLLMEngine: one
-    asyncio task per request that sleeps until the request's arrival offset,
-    then streams tokens, recording the wall-clock time of the first streamed
-    token (true TTFT) and of completion. This mirrors real clients hitting a
-    live server, which is the whole point of the comparison.
+    Offline `LLM.generate(prompts)` takes the list up front and schedules it how
+    it likes, erasing arrival timing. It can't model open-loop Poisson load or
+    measure a TTFT tail under queueing. AsyncLLMEngine instead runs one asyncio
+    task per request that sleeps until the request's arrival offset, then streams
+    tokens, recording the wall-clock first-token time (true TTFT) and completion.
+    That matches real clients hitting a live server.
 
 Run it on a GPU box (vLLM is Linux/CUDA only):
     pip install vllm
@@ -25,15 +21,14 @@ Run it on a GPU box (vLLM is Linux/CUDA only):
     # then compare against the from-scratch engine's run at the same rate/n.
 
 API note:
-    The vLLM API used here (AsyncEngineArgs, AsyncLLMEngine.from_engine_args,
-    and the streaming `async for out in engine.generate(prompt, sampling_params,
-    request_id=...)` interface where each yielded RequestOutput carries
-    cumulative `outputs[0].token_ids` and a `.finished` flag) matches vLLM
-    ~0.4.x through ~0.6.x. On the newer V1 engine (vLLM >= 0.7) AsyncLLMEngine
-    still exists but is being superseded by `vllm.v1` / `AsyncLLM`; the
-    from_engine_args + streaming-generate contract used below is stable across
-    the 0.4-0.6 line. `RequestOutput.metrics.first_scheduled_time` (used to
-    recover queue delay) is best-effort and may be None on some builds; we fall
+    The API used here (AsyncEngineArgs, AsyncLLMEngine.from_engine_args, and the
+    streaming `async for out in engine.generate(prompt, sampling_params,
+    request_id=...)` where each RequestOutput carries cumulative
+    `outputs[0].token_ids` and a `.finished` flag) matches vLLM ~0.4.x-0.6.x. On
+    the V1 engine (>= 0.7) AsyncLLMEngine still exists but is being superseded by
+    `vllm.v1` / `AsyncLLM`; the from_engine_args + streaming-generate contract
+    below is stable across 0.4-0.6. `RequestOutput.metrics.first_scheduled_time`
+    (used for queue delay) is best-effort and may be None on some builds; we fall
     back gracefully.
 """
 from __future__ import annotations

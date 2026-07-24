@@ -1,22 +1,22 @@
-"""Paged execution: a batch state whose KV actually lives in a block pool,
-gathered into a contiguous cache each decode step and scattered back after.
+"""Paged execution: a batch state whose KV lives in a block pool, gathered into
+a contiguous cache each decode step and scattered back after.
 
-This is the real thing, not accounting: KV bytes are stored in fixed blocks
-drawn from a free list (server/paged_cache.py), and attention runs over KV
-reassembled from a per-sequence block table.
+KV bytes are stored in fixed blocks drawn from a free list
+(server/paged_cache.py); attention runs over KV reassembled from a per-sequence
+block table.
 
-The gather/scatter is **vectorized**: a sequence's block table + position maps
-to a linear slot (block * block_size + offset), so gathering the whole batch is
-one `index_select` per layer instead of a Python loop over sequences and
-blocks. That matters — with the naive per-block loop, at GPU speeds the serial
-Python copy dominates and makes paging look artificially slow. With the slot-
-table gather, the paged-vs-contiguous comparison is about paging itself.
+Gather/scatter is vectorized: a sequence's block table + position maps to a
+linear slot (block * block_size + offset), so gathering the whole batch is one
+`index_select` per layer, not a Python loop over sequences and blocks. With the
+naive per-block loop the serial Python copy dominates at GPU speeds and makes
+paging look artificially slow; the slot-table gather keeps the paged-vs-
+contiguous comparison about paging itself.
 
 To keep decode OOM-free without a preemption/recompute loop, a sequence reserves
-its whole potential span (prompt + max_tokens) in *block* granularity at
-admission; the engine's admission control refuses a request the pool can't hold
-(backpressure). Scheduling (continuous admit/evict) is identical to the
-contiguous engine; only the memory substrate changes.
+its whole potential span (prompt + max_tokens) at block granularity on
+admission; admission control refuses a request the pool can't hold
+(backpressure). Scheduling (continuous admit/evict) matches the contiguous
+engine; only the memory substrate changes.
 
 Verified token-for-token against naive decoding by the equivalence oracle.
 """
@@ -79,7 +79,7 @@ class PagedKVStore:
     def gather_batch(self, tables, lengths, T_max):
         """Left-padded KV for the whole batch. Returns (keys, values, mask)
         where keys[li]/values[li] are [B, n_kv, T_max, head_dim]. One
-        index_select per layer — no Python loop over blocks."""
+        index_select per layer, no Python loop over blocks."""
         dev = self.key[0].device
         B = len(tables)
         slot_idx = torch.zeros(B, T_max, dtype=torch.long, device=dev)

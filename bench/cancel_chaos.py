@@ -1,21 +1,20 @@
-"""Cancellation chaos harness — prove the KV block pool never leaks when
-clients hang up mid-generation.
+"""Cancellation chaos harness: prove the KV block pool never leaks when clients
+hang up mid-generation.
 
 Two layers:
 
-1. `alloc_stress` hammers the BlockAllocator directly: spin up random
-   sequences, grow them, abort a random subset partway, free the rest, and
-   after every cycle assert the free list is whole again. A leaked block (one
-   grabbed on admission and never returned on abort) shows up immediately as
-   `num_free < num_blocks`, and a partition check catches a block that is ever
-   in two places or none. Runs thousands of cycles with no model, so it's the
-   rigorous proof.
+1. `alloc_stress` hammers the BlockAllocator directly: spin up random sequences,
+   grow them, abort a random subset partway, free the rest, and after every
+   cycle assert the free list is whole again. A leaked block (grabbed on
+   admission, never returned on abort) shows up as `num_free < num_blocks`, and
+   a partition check catches a block that's ever in two places or none. Thousands
+   of cycles, no model.
 
 2. `engine_chaos` runs the real PagedContinuousEngine: submit a batch, cancel a
    random subset mid-stream via `engine.cancel()`, wait for everything to
-   settle, and assert the pool is fully reclaimed and no sequence is left
-   running. This proves the cancel -> reap -> evict -> free_seq wiring end to
-   end, not just the allocator.
+   settle, and assert the pool is fully reclaimed with no sequence left running.
+   Exercises the cancel -> reap -> evict -> free_seq wiring end to end, not just
+   the allocator.
 
     python -m bench.cancel_chaos                        # alloc stress only (fast)
     python -m bench.cancel_chaos --engine --engine-cycles 30   # + real engine
@@ -34,8 +33,8 @@ from server.paged_cache import BlockAllocator, OutOfBlocks
 
 
 def _assert_partition(alloc: BlockAllocator):
-    """Every block is either free or in exactly one sequence's table — always.
-    A leak (block in neither) or a double-alloc (block in two) fails here."""
+    """Every block is either free or in exactly one sequence's table. A leak
+    (block in neither) or a double-alloc (block in two) fails here."""
     used = [b for t in alloc.tables.values() for b in t]
     assert len(used) == len(set(used)), "a block is allocated to two sequences"
     everything = set(used) | set(alloc.free)

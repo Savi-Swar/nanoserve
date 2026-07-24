@@ -1,8 +1,8 @@
-"""Audit row #2 — prefix caching. The optimization that should SURVIVE.
+"""Audit row #2: prefix caching. Should survive.
 
-Deterministic metric: fraction of prompt (prefill) tokens we avoid recomputing.
-Two workloads: a shared system prompt across requests (prefix reuse applies)
-vs distinct prefixes (nothing to reuse). Exactness checked against naive.
+Deterministic metric: fraction of prompt (prefill) tokens we skip recomputing.
+Two workloads: a shared system prompt across requests (reuse applies) vs
+distinct prefixes (nothing to reuse). Exactness checked against naive.
 
     python -m bench.prefix_study
 """
@@ -83,8 +83,8 @@ def main():
           f"({s_distinct['prefill_tokens_computed']}/{s_distinct['prefill_tokens_total']} toks)  "
           f"{s_distinct['hits']:<8}{'OK' if ex_d else 'FAIL'}")
     print("-" * 48)
-    print("prefix caching survives: big win with a shared prefix, ~0 without — "
-          "and exact either way.")
+    print("prefix caching survives: big win with a shared prefix, ~0 without, "
+          "exact either way.")
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w") as f:

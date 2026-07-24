@@ -1,35 +1,33 @@
-"""Did the roofline model predict the machine? — the decode-batch crossover test.
+"""Does the roofline model predict the machine? The decode-batch crossover test.
 
 bench/roofline.py makes a falsifiable claim: decode throughput scales ~linearly
 with batch size B up to a crossover
 
-    B* = W / (S * kv_per_tok)          (weights bytes / per-batch KV bytes)
+    B* = W / (S * kv_per_tok)          (weight bytes / per-batch KV bytes)
 
-and flattens above it, because below B* a decode step is WEIGHT-BOUND (the fixed
-weight read W dominates HBM traffic, so amortizing it over B tokens buys you
-~linear throughput) and above B* it is KV-BOUND (KV traffic B*S*kv_per_tok grows
-with B and cancels the B in the numerator, so tok/s saturates). See
+and flattens above it. Below B* a decode step is weight-bound (the fixed weight
+read W dominates HBM traffic, so amortizing it over B tokens buys ~linear
+throughput); above B* it's KV-bound (KV traffic B*S*kv_per_tok grows with B and
+cancels the B in the numerator, so tok/s saturates). See
 roofline.crossover_batch / decode_throughput_tok_s.
 
-This script MEASURES that crossover. For each B it runs a real batched decode
+This script measures that crossover. For each B it runs a real batched decode
 (server.batched.BatchState over B identical sequences), times `--steps` decode
-steps, and computes decode throughput = (B * steps) / elapsed. It then finds the
-B where measured throughput stops scaling ~linearly and compares it to the B*
-the analytical model predicts. That is the whole experiment: analytical
-prediction vs. the number the hardware actually produces.
+steps, and computes decode throughput = (B * steps) / elapsed. It finds the B
+where measured throughput stops scaling ~linearly and compares it to the
+predicted B*: analytical prediction vs. what the hardware actually produces.
 
     python -m bench.crossover_study                       # full sweep (slow on CPU)
     python -m bench.crossover_study --batches 1 2 4 8 --steps 8 --seq-len 64
 
-HONEST CAVEAT — this is a clean test ONLY on GPU. The roofline assumes a
-single, saturable HBM read bandwidth: a decode step is a memory-copy of the
-model out of VRAM, and B* is the batch at which the KV copy equals the weight
-copy. A CPU has caches, prefetchers, multiple memory channels, and per-op Python
-/ kernel-launch overhead that dominates at these tiny sizes; it is NOT
-bandwidth-bound the same way, so the measured crossover on CPU need not match B*
-and the absolute tok/s numbers are overhead-limited, not bandwidth-limited. On
-CPU this run is a SMOKE TEST that the harness works; run it on a T4/L4/A10 for
-the real predicted-vs-measured comparison.
+Clean only on GPU. The roofline assumes a single saturable HBM read bandwidth:
+a decode step is a memory-copy of the model out of VRAM, and B* is the batch at
+which the KV copy equals the weight copy. A CPU has caches, prefetchers,
+multiple memory channels, and per-op Python/kernel-launch overhead that
+dominates at these tiny sizes; it isn't bandwidth-bound the same way, so the CPU
+crossover need not match B* and the absolute tok/s are overhead-limited. On CPU
+this is a smoke test that the harness works; run on a T4/L4/A10 for the real
+predicted-vs-measured comparison.
 """
 from __future__ import annotations
 
@@ -49,8 +47,8 @@ from bench import roofline
 
 
 def make_prompt_ids(m: ModelRunner, seq_len: int) -> list[int]:
-    """A filler prompt of exactly `seq_len` real tokens, so the KV cache holds
-    ~S tokens during decode and the measured S matches the S fed to the roofline."""
+    """Filler prompt of exactly `seq_len` real tokens, so the KV cache holds ~S
+    tokens during decode and the measured S matches the S fed to the roofline."""
     base = m.encode(
         "The transformer decodes one token at a time, streaming every weight "
         "out of memory for each step, which is why batching amortizes the read."
@@ -63,14 +61,14 @@ def make_prompt_ids(m: ModelRunner, seq_len: int) -> list[int]:
 
 def time_batch(m: ModelRunner, prompt_ids: list[int], B: int, steps: int) -> dict:
     """Prefill B identical sequences into one BatchState, then time `steps`
-    batched decode .step() calls. Timing is bracketed by m.sync() so queued
-    device work is flushed before we start and before we stop the clock; step()
-    also sync()s internally, so every measured step is fully materialized.
+    batched decode .step() calls. m.sync() brackets the timing to flush queued
+    device work before start and before stop; step() also sync()s internally, so
+    every measured step is fully materialized.
 
-    Note: step() runs the full [B,1] batched forward over ALL rows every call,
-    independent of whether a row has hit max_tokens — so even if rows "finish"
-    partway through the window (we don't evict), the compute we are timing is
-    still the full B-wide decode. max_tokens is set to `steps` per the spec."""
+    step() runs the full [B,1] batched forward over all rows every call,
+    regardless of whether a row hit max_tokens, so even if rows finish partway
+    through the window (no eviction) the timed compute is still the full B-wide
+    decode. max_tokens is set to `steps`."""
     reqs = [
         Request(
             id=i,
@@ -81,7 +79,7 @@ def time_batch(m: ModelRunner, prompt_ids: list[int], B: int, steps: int) -> dic
         for i in range(B)
     ]
     batch = BatchState(m)
-    batch.add(reqs)  # prefill — kernels/weights are warm after this
+    batch.add(reqs)  # prefill; kernels/weights warm after this
 
     m.sync()
     t0 = time.perf_counter()
@@ -104,18 +102,17 @@ def time_batch(m: ModelRunner, prompt_ids: list[int], B: int, steps: int) -> dic
 def measured_crossover(sweep: list[dict]) -> tuple[float | None, str]:
     """Find the batch where throughput stops scaling ~linearly with B.
 
-    HEURISTIC: for each consecutive pair (B_i -> B_{i+1}) compute the *scaling
-    efficiency* of that jump,
+    Heuristic: for each consecutive pair (B_i -> B_{i+1}) compute the scaling
+    efficiency of that jump,
 
         eff = (T_{i+1}/T_i - 1) / (B_{i+1}/B_i - 1)
 
-    i.e. realized marginal throughput gain divided by the ideal linear gain.
-    eff = 1.0 is perfect linear scaling (a doubling of B doubles tok/s); eff = 0
-    is full saturation (more batch buys nothing). We call the crossover the FIRST
-    B_i whose next jump falls below eff = 0.5 — the marginal gain per doubling has
-    dropped below 50% of linear, the knee the roofline predicts at B*. If every
-    jump stays above 0.5, the sweep never saturated (crossover is beyond the
-    largest B tested) and we return None."""
+    realized marginal throughput gain over the ideal linear gain. eff = 1.0 is
+    perfect linear scaling (doubling B doubles tok/s); eff = 0 is full saturation
+    (more batch buys nothing). Crossover is the first B_i whose next jump falls
+    below eff = 0.5, i.e. marginal gain per doubling under 50% of linear, the
+    knee the roofline predicts at B*. If every jump stays above 0.5 the sweep
+    never saturated (crossover beyond the largest B) and we return None."""
     thr = 0.5
     for a, b in zip(sweep, sweep[1:]):
         b_ratio = b["batch"] / a["batch"]
@@ -130,7 +127,7 @@ def measured_crossover(sweep: list[dict]) -> tuple[float | None, str]:
                 f"(< {thr:.1f}): throughput knee at B~={a['batch']}"
             )
     return None, (
-        f"no jump fell below {thr:.1f} scaling efficiency — throughput still "
+        f"no jump fell below {thr:.1f} scaling efficiency; throughput still "
         f"scaled ~linearly across the whole sweep; crossover is beyond the "
         f"largest B tested"
     )
@@ -157,7 +154,7 @@ def main():
     S = a.seq_len
     batches = sorted(set(a.batches))
 
-    print(f"### decode-crossover study  —  model={a.model}  device={a.device}")
+    print(f"### decode-crossover study   model={a.model}  device={a.device}")
     print(f"loading model...")
     m = ModelRunner(a.model, device=a.device)
     m.warmup()
@@ -185,7 +182,7 @@ def main():
             # losing the whole run.
             oom_at = B
             torch.cuda.empty_cache()
-            print(f"  B={B:>4}  OOM — stopping the sweep here, "
+            print(f"  B={B:>4}  OOM, stopping the sweep here, "
                   f"reporting the {len(sweep)} batches that fit")
             break
         sweep.append(row)
@@ -193,7 +190,7 @@ def main():
               f"{row['per_step_ms']:>8.2f} ms/step")
 
     if not sweep:
-        print("[!] no batch size fit in memory — nothing to report")
+        print("[!] no batch size fit in memory, nothing to report")
         return
 
     meas_cross, meas_reason = measured_crossover(sweep)
@@ -226,7 +223,7 @@ def main():
     print(f"  measured crossover  ~= {meas_str}")
     print(f"    ({meas_reason})")
     if on_cpu:
-        print("  [smoke test on CPU — do not read agreement/disagreement here as a "
+        print("  [smoke test on CPU: don't read agreement/disagreement here as a "
               "verdict on the model; the clean test is on GPU.]")
 
     # ---- PERSIST ------------------------------------------------------------

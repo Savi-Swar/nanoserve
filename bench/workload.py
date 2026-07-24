@@ -1,8 +1,8 @@
 """Open-loop load generation. Requests arrive on a wall clock following a
-Poisson process (exponential inter-arrival gaps) — the standard model for
-independent clients hitting a service. Crucially this is *open loop*: arrivals
-do not wait for prior requests to finish, so an overloaded engine builds a real
-queue and TTFT blows up. That queue is exactly what continuous batching kills.
+Poisson process (exponential inter-arrival gaps), the standard model for
+independent clients hitting a service. Open-loop means arrivals don't wait for
+prior requests to finish, so an overloaded engine builds a real queue and TTFT
+blows up. That queue is what continuous batching kills.
 """
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import time
 
 from server.request import Request, SamplingParams
 
-# A small bank of prompts with deliberately varied lengths, so prefill cost and
-# sequence length differ across requests (uneven finish times are what make
-# static batching waste the GPU and continuous batching win).
+# Varied-length prompts, so prefill cost and sequence length differ across
+# requests. Uneven finish times are what make static batching waste the GPU and
+# continuous batching win.
 PROMPT_BANK = [
     "Hi.",
     "What is 17 times 24?",

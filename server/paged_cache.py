@@ -1,23 +1,23 @@
-"""Paged KV cache — the memory manager, modeled on OS virtual-memory paging
+"""Paged KV cache: the memory manager, modeled on OS virtual-memory paging
 (vLLM/PagedAttention, SOSP 2023).
 
 The KV cache is the capacity bottleneck of an inference server: how many
-sequences you can hold at once caps batch size, which caps throughput. The
-naive layouts waste most of it:
+sequences you hold at once caps batch size, which caps throughput. The naive
+layouts waste most of it:
 
   reserve-to-max   give every sequence room for the longest it *could* get
                    -> 60-80% wasted on sequences that finish early
   padded batch     pad every sequence to the batch's current longest
                    -> wastes the gap between shortest and longest each step
 
-Paging fixes both: KV lives in fixed-size blocks drawn from a shared pool via
-a free list. A sequence holds a block table (its list of block ids) and grows
-one block at a time on demand. The only waste is *internal* fragmentation in
-each sequence's last, partially-filled block — bounded by block_size-1 tokens,
+Paging fixes both: KV lives in fixed-size blocks drawn from a shared pool via a
+free list. A sequence holds a block table (its block ids) and grows one block
+at a time on demand. The only waste is internal fragmentation in each
+sequence's last, partially-filled block, bounded by block_size-1 tokens and
 independent of how long the sequence could have grown.
 
-This module is the allocator (the systems artifact) plus the byte accounting
-used by the fragmentation ablation. The block *tensors* live in PagedKVStore.
+This module is the allocator plus the byte accounting used by the fragmentation
+ablation. The block tensors live in PagedKVStore.
 """
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ import math
 
 
 class OutOfBlocks(Exception):
-    """Raised when the pool is exhausted — the server's OOM signal, which the
-    scheduler answers with admission control / preemption."""
+    """Raised when the pool is exhausted: the server's OOM signal, answered by
+    admission control / preemption."""
 
 
 class BlockAllocator:

@@ -1,18 +1,17 @@
-"""Batched execution over a *set* of active sequences — the layer both static
-and continuous batching are built on.
+"""Batched execution over a set of active sequences: the layer static and
+continuous batching share.
 
-The hard part of batching decode is that sequences in a batch have different
-lengths. We keep the KV cache left-padded so every active sequence is aligned
-at the right edge (its newest token is always at column T-1). That makes the
-per-step decode a single [B, 1] forward. RoPE stays correct because we pass
-true per-row position_ids; padded columns are masked out of attention, so the
-zeros we pad with never affect the softmax.
+Sequences in a batch have different lengths. The KV cache is left-padded so
+every active sequence aligns at the right edge (newest token always at column
+T-1), making per-step decode a single [B, 1] forward. RoPE stays correct
+because we pass true per-row position_ids; padded columns are masked out of
+attention, so the pad zeros never touch the softmax.
 
-The wasted space between the shortest and longest sequence in the batch is
-exactly the padding fragmentation that the paged KV cache (next tier) removes.
+The gap between the shortest and longest sequence is exactly the padding
+fragmentation the paged KV cache (next tier) removes.
 
-Cache access targets transformers 5.x, where a DynamicCache holds its tensors
-in `cache.layers[i].keys / .values` ([B, n_kv_heads, T, head_dim]).
+Targets transformers 5.x, where a DynamicCache holds tensors in
+`cache.layers[i].keys / .values` ([B, n_kv_heads, T, head_dim]).
 """
 from __future__ import annotations
 
@@ -154,7 +153,7 @@ class BatchState:
         finished = []
         for i, (r, tok) in enumerate(zip(self.reqs, nxt.tolist())):
             if not self.active[i]:
-                continue  # row already done — occupies a slot but isn't extended
+                continue  # row already done, occupies a slot but isn't extended
             r.output_tokens.append(tok)
             done = r.num_output >= r.sampling.max_tokens or (
                 not r.sampling.ignore_eos and tok == self.m.eos_id
@@ -186,8 +185,8 @@ class BatchState:
         self._trim()
 
     def _trim(self):
-        """Remove leading columns that are padding for every remaining row —
-        the contiguous cache's version of freeing memory."""
+        """Remove leading columns that are padding for every remaining row.
+        The contiguous cache's version of freeing memory."""
         if self.mask is None or self.T == 0:
             return
         col_used = self.mask.sum(dim=0)  # [T]

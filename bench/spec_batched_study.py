@@ -3,9 +3,9 @@ vs plain continuous batching (paged) at increasing batch size, on generic
 (low-acceptance) vs grounded (high-acceptance) prompts.
 
 The cost model (bench/spec_cost.py) predicts speedup crosses 1 at B = a*B*, so
-on generic traffic speculation should turn into a net loss almost immediately
-(B>=2), while on grounded traffic it should stay a win much longer. This
-measures the real crossover to check that prediction.
+on generic traffic speculation should become a net loss almost immediately
+(B>=2), while on grounded traffic it stays a win much longer. This measures the
+real crossover to check that prediction.
 
     python -m bench.spec_batched_study --device cuda --batches 1 2 4 8 16 32
 

@@ -1,17 +1,16 @@
 """Adversarial equivalence: try to BREAK batched/paged decoding against the
-naive single-sequence baseline. Batched inference is a minefield — left
-padding, attention-mask offsets, KV-cache write positions, RoPE positions,
-block boundaries. These are the cases most likely to expose an offset bug:
+naive single-sequence baseline. Batched inference is a minefield: left padding,
+attention-mask offsets, KV-cache write positions, RoPE positions, block
+boundaries. These cases are the ones most likely to expose an offset bug:
 1-token prompts, permutation across batch positions, extreme length skew,
 duplicates, and paged execution with block_size down to 1.
 
-Caveat (why this asserts token-identity and not bit-identity of logits):
-under greedy (temperature 0) the emitted token is argmax(logits). Batching
-changes the float reduction *order*, so logits differ in the last ~1e-4. That
-flips the argmax only on a near-tie between two tokens. These prompts don't hit
-a near-tie, so identity holds; on a genuinely tied logit, batched and naive may
-legitimately diverge by a token. Batching is exact up to float non-associativity,
-not bit-identical — the honest claim.
+Why this asserts token-identity, not bit-identity of logits: under greedy
+(temperature 0) the emitted token is argmax(logits). Batching changes the float
+reduction order, so logits differ in the last ~1e-4. That flips the argmax only
+on a near-tie. These prompts don't hit a near-tie, so identity holds; on a
+genuinely tied logit, batched and naive may diverge by a token. Batching is
+exact up to float non-associativity, not bit-identical.
 
 Guarded (loads the model): RUN_SLOW=1 python -m pytest tests/test_stress_equivalence.py -q
 """

@@ -1,15 +1,15 @@
-"""One-shot GPU run: everything that was deferred from the CPU dev box, on CUDA.
-Produces the headline graphs, JSON, and a consolidated results/summary.txt.
+"""One-shot GPU run: everything deferred from the CPU dev box, on CUDA.
+Produces the graphs, JSON, and a consolidated results/summary.txt.
 
 Run on any CUDA box (Colab T4, a rented A10/L4, etc.):
 
     pip install -r requirements.txt && pip install vllm   # vllm optional
     python scripts/gpu_run.py
 
-Sized to finish in ~20-25 min on a free T4. Every step is guarded AND has a hard
-timeout, so a slow/hung step (naive under load is the usual culprit) can't stall
-the whole run -- it's marked failed and the rest continues. Bump --n / --rates on
-a dedicated box for bigger numbers.
+Sized for ~20-25 min on a free T4. Every step is guarded with a hard timeout, so
+a slow/hung step (naive under load, usually) can't stall the run: it's marked
+failed and the rest continues. Bump --n / --rates on a dedicated box for bigger
+numbers.
 """
 from __future__ import annotations
 
@@ -32,10 +32,10 @@ def step(title, args, timeout=STEP_TIMEOUT):
         subprocess.run([PY, "-m", *args], check=True, timeout=timeout)
         return True
     except subprocess.TimeoutExpired:
-        print(f"[!] step timed out after {timeout}s -- skipping, continuing")
+        print(f"[!] step timed out after {timeout}s, skipping")
         return False
     except subprocess.CalledProcessError as e:
-        print(f"[!] step failed ({e}) -- continuing")
+        print(f"[!] step failed ({e}), continuing")
         return False
 
 
@@ -48,8 +48,8 @@ def _load(path):
 
 
 def write_summary(ok):
-    """Consolidate the JSON outputs into results/summary.txt so the headline
-    numbers are readable in one place (and easy to lift into the writeup)."""
+    """Consolidate the JSON outputs into results/summary.txt: readable in one
+    place, easy to lift into the writeup."""
     lines = ["nanoserve GPU run summary", "=" * 40, ""]
     lines.append("steps: " + ", ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in ok.items()))
     lines.append("")
@@ -109,7 +109,7 @@ def write_summary(ok):
 
     cx = _load("results/crossover.json")
     if cx:
-        tag = "  (CPU smoke test — not valid)" if cx.get("cpu_smoke_test") else ""
+        tag = "  (CPU smoke test, not valid)" if cx.get("cpu_smoke_test") else ""
         lines.append(f"roofline crossover (S={cx.get('seq_len')}): predicted B*="
                      f"{cx.get('predicted_crossover_batch', 0):.0f}, measured ~= "
                      f"{cx.get('measured_crossover_batch')}{tag}")
@@ -156,7 +156,7 @@ def main():
         subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
                         "--format=csv"], check=False)
     else:
-        print("[!] no nvidia-smi -- is this a CUDA box? vLLM will fail, util will be n/a.")
+        print("[!] no nvidia-smi; is this a CUDA box? vLLM will fail, util will be n/a.")
 
     ok = {}
     # 1. throughput ladder (fp16). Small n + few rates so naive (serial, and the
@@ -186,7 +186,7 @@ def main():
         "--rates", "4", "8", "16", "--n", "32", "--max-tokens", "48",
         "--ttft-slo", "500", "--tpot-slo", "50", "--device", DEV])
 
-    # 4c. does speculative decoding survive batching? (the headline)
+    # 4c. does speculative decoding survive batching?
     ok["spec_cost"] = step("spec cost model (predicted win->loss crossover)",
                            ["bench.spec_cost"])
     ok["spec_batched"] = step("batched speculative decoding: measured vs continuous", [
@@ -199,7 +199,7 @@ def main():
         "--rate", "16", "--n", "48", "--device", DEV])
 
     # 6. roofline crossover: does the predicted crossover batch match measurement?
-    # (run BEFORE vLLM — vLLM's EngineCore lingers on GPU memory and would OOM this)
+    # (run BEFORE vLLM; vLLM's EngineCore lingers on GPU memory and would OOM this)
     ok["crossover"] = step("roofline crossover (predicted vs measured batch)", [
         "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
         "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320"],
@@ -218,7 +218,7 @@ def main():
         "--models", "Qwen/Qwen2.5-0.5B", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-3B"],
         timeout=1800)
 
-    # 8. vLLM reference ceiling LAST — its EngineCore can hold GPU memory after it
+    # 8. vLLM reference ceiling LAST; its EngineCore can hold GPU memory after it
     ok["vllm"] = step("vLLM reference ceiling", [
         "bench.vllm_ref", "--n", "48", "--rate", "16", "--out", "results/vllm.json"],
         timeout=600)

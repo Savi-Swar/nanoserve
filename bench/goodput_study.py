@@ -1,11 +1,9 @@
-"""Goodput: req/s that actually meet a latency SLO.
+"""Goodput: req/s that meet a latency SLO.
 
-Peak throughput can mislead: a server can post big tok/s while most requests miss
-their latency target. Goodput counts only requests that meet BOTH an SLO on
-TTFT (time to first token) and on TPOT (per-output-token latency), and reports
-requests/sec of those. Sweeping offered load, goodput rises with rate, then
-saturates and falls once the server can't keep the tail under SLO. The peak is
-the sustainable capacity.
+Throughput alone misleads: a server can post big tok/s while most requests miss
+their latency target. Goodput counts only requests meeting both the TTFT (time
+to first token) and TPOT (per-output-token) SLOs. Sweeping offered load, it
+rises, then falls once the tail slips past SLO; the peak is sustainable capacity.
 
     python -m bench.goodput_study --engines naive static continuous paged \
         --rates 2 4 8 16 32 --ttft-slo 1000 --tpot-slo 100

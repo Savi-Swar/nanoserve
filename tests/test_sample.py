@@ -22,8 +22,8 @@ def test_greedy_property_true_for_zero_temperature():
 
 
 def test_one_hot_huge_logit_dominates_sampling():
-    # A single enormous logit makes the softmax essentially one-hot, so even
-    # stochastic sampling (temperature=1.0) should return that index.
+    # A single enormous logit makes the softmax ~one-hot, so even stochastic
+    # sampling (temperature=1.0) should return that index.
     vocab = 32
     logits = torch.full((1, vocab), -50.0)
     target = 17

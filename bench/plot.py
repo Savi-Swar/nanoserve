@@ -1,9 +1,9 @@
-"""Turn a benchmark sweep JSON into publication-quality PNG charts.
+"""Turn a benchmark sweep JSON into comparison PNG charts.
 
     python -m bench.plot --results results/sweep.json --out results/
 
-Reads the JSON produced by sweeping ``run_bench`` across engines/rates and
-emits a small set of comparison figures (matplotlib only, no seaborn).
+Reads the JSON produced by sweeping ``run_bench`` across engines/rates and emits
+a few comparison figures (matplotlib only, no seaborn).
 
 Input schema (see repo README / run_bench)::
 
