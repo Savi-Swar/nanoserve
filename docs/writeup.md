@@ -543,12 +543,22 @@ For an ML-infra / systems screener:
 
 Two fixes sent upstream while working in this space:
 
-- **vLLM** — a one-line bug fix, and nothing more than that: `smart_resize` in the
-  Keye model raised its aspect-ratio `ValueError` from a string literal with a `{...}`
-  expression but no `f` prefix, so the message printed the literal braces instead of
-  the computed ratio. A real defect on a real code path, but a one-liner — worth being
-  precise about in a repo whose whole point is not overstating results.
-  [vllm-project/vllm#49676](https://github.com/vllm-project/vllm/pull/49676).
+- **vLLM — scheduler resource leak on abort** ([#49684](https://github.com/vllm-project/vllm/pull/49684)).
+  In the V1 scheduler, `_re_block_ids` snapshots each scheduled request's block IDs;
+  it's populated unconditionally for every scheduled request but only freed on the
+  token-emitting path in `update_from_output`. A request aborted while in flight hits
+  the `if request is None or request.is_finished(): continue` branch before that free,
+  and `_free_request` (the common finish/abort funnel) never cleans it up — so it
+  leaks one dict entry per aborted-in-flight request, unbounded, when
+  `enable_return_routed_experts` is on. The fix frees it in `_free_request`, mirroring
+  the adjacent `_inflight_prefills.discard`. This is the same leak-on-abort lifecycle
+  as this project's own cancellation work — which is how I knew where to look.
+- **vLLM — a one-line bug fix, and nothing more than that** ([#49676](https://github.com/vllm-project/vllm/pull/49676)).
+  `smart_resize` in the Keye model raised its aspect-ratio `ValueError` from a string
+  literal with a `{...}` expression but no `f` prefix, so the message printed the
+  literal braces instead of the computed ratio. A real defect on a real code path, but
+  a one-liner — worth being precise about in a repo whose whole point is not
+  overstating results.
 - **Hugging Face `accelerate`** — a broken code example and two typos in the
   sequence-parallelism guide (a `ParallelismConfig` snippet used
   `sp_seq_length_is_variable: true`, YAML syntax inside a Python call, a
