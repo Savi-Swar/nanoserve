@@ -14,12 +14,14 @@ two things that need no model:
      (add_seq / append_token / free_seq): allocator throughput in ops/sec. A
      timing signal, so it's noisy on shared runners and gets a wider band.
 
-The gate compares the current proxy against a committed baseline and fails if a
-metric regresses beyond its threshold:
+The gate compares the current proxy against a committed baseline. Only the two
+deterministic metrics fail the build. The timing metric is reported but never
+fails it: wall-clock on a shared CI runner swings 2-3x between runs and against a
+baseline captured on another machine, so gating on it just produces false alarms.
 
-  * fragmentation increased  > 3 %  relative   (tight, deterministic)
-  * paged capacity dropped   > 3 %             (tight, deterministic)
-  * alloc ops/sec dropped    > 15 %            (loose, timing is noisy)
+  * fragmentation increased  > 3 %  relative   -> FAIL   (deterministic)
+  * paged capacity dropped   > 3 %             -> FAIL   (deterministic)
+  * alloc ops/sec dropped    > 50 %            -> warn   (timing, informational)
 
 Usage:
     python -m bench.regression --update-baseline   # write results/baseline.json
@@ -67,7 +69,7 @@ MICRO_REPEATS = 5            # median over repeats to damp timing noise
 # --- regression thresholds --------------------------------------------------
 FRAG_TOL = 0.03              # frag may rise at most 3% relative (deterministic)
 CAP_TOL = 0.03              # capacity may drop at most 3% (deterministic)
-OPS_TOL = 0.15              # ops/sec may drop at most 15% (noisy timing)
+OPS_TOL = 0.50              # ops/sec: informational only, warn on a big drop
 
 
 # ---------------------------------------------------------------------------
@@ -186,20 +188,22 @@ def check(path: str = BASELINE_PATH) -> int:
         base = json.load(f)
     cur = run_proxy()
 
-    # (label, baseline, current, direction, tolerance)
+    # (label, baseline, current, direction, tolerance, gate)
     #   direction "up"   -> a regression is the metric going UP  (fragmentation)
     #   direction "down" -> a regression is the metric going DOWN (capacity, ops)
+    #   gate=True fails the build; gate=False warns only (timing is noisy on
+    #   shared runners, so it can't be gated against a cross-machine baseline).
     rows = [
-        ("frag (paged)", base["paged_frag"], cur["paged_frag"], "up", FRAG_TOL),
-        ("capacity (paged)", base["paged_capacity"], cur["paged_capacity"], "down", CAP_TOL),
-        ("alloc ops/sec", base["alloc_ops_per_sec"], cur["alloc_ops_per_sec"], "down", OPS_TOL),
+        ("frag (paged)", base["paged_frag"], cur["paged_frag"], "up", FRAG_TOL, True),
+        ("capacity (paged)", base["paged_capacity"], cur["paged_capacity"], "down", CAP_TOL, True),
+        ("alloc ops/sec", base["alloc_ops_per_sec"], cur["alloc_ops_per_sec"], "down", OPS_TOL, False),
     ]
 
     print("=" * 74)
     print(f"{'metric':<18}{'baseline':>14}{'current':>14}{'Δ%':>9}{'limit':>9}  verdict")
     print("-" * 74)
     failed = False
-    for label, b, c, direction, tol in rows:
+    for label, b, c, direction, tol, gate in rows:
         b = float(b)
         c = float(c)
         rel = (c - b) / b if b else 0.0            # signed relative change
@@ -209,15 +213,18 @@ def check(path: str = BASELINE_PATH) -> int:
         else:
             regressed = rel < -tol                  # dropped too much
             limit = f"-{tol*100:.0f}%"
-        verdict = "FAIL" if regressed else "ok"
-        failed = failed or regressed
+        if regressed:
+            verdict = "FAIL" if gate else "warn"
+        else:
+            verdict = "ok"
+        failed = failed or (regressed and gate)
         print(f"{label:<18}{b:>14.4g}{c:>14.4g}{rel*100:>+8.1f}%{limit:>9}  {verdict}")
     print("=" * 74)
 
     if failed:
-        print("PERF REGRESSION: a metric moved past its threshold. See table above.")
+        print("PERF REGRESSION: a deterministic metric moved past its threshold. See table above.")
         return 1
-    print("PASS: no regression beyond thresholds.")
+    print("PASS: no regression in the deterministic metrics.")
     return 0
 
 
