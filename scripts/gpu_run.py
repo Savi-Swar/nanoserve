@@ -24,12 +24,15 @@ PY = sys.executable
 STEP_TIMEOUT = 720  # seconds; hard cap per step so nothing hangs the run
 
 
-def step(title, args, timeout=STEP_TIMEOUT):
+def step(title, args, timeout=STEP_TIMEOUT, env=None):
     print("\n" + "=" * 70)
     print(f">>> {title}")
     print("=" * 70)
+    run_env = None
+    if env:
+        run_env = dict(os.environ, **env)
     try:
-        subprocess.run([PY, "-m", *args], check=True, timeout=timeout)
+        subprocess.run([PY, "-m", *args], check=True, timeout=timeout, env=run_env)
         return True
     except subprocess.TimeoutExpired:
         print(f"[!] step timed out after {timeout}s, skipping")
@@ -177,7 +180,15 @@ def kernel_run():
     ok["kernel_tests"] = step("triton kernel equivalence tests",
                               ["pytest", "tests/test_kernel_equivalence.py", "-v",
                                "--tb=short"])
+    ok["fused_exact"] = step("fused paged path token-exactness",
+                             ["pytest", "tests/test_fused_paged.py", "-v", "--tb=short"],
+                             env={"RUN_SLOW": "1"})
     ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"])
+    # end-to-end: the same open-loop workload through gather-paged vs fused-paged
+    ok["e2e"] = step("engine sweep: paged vs paged_fused", [
+        "bench.sweep", "--engines", "paged", "paged_fused",
+        "--rates", "16", "--n", "32", "--max-tokens", "48", "--device", "cuda",
+        "--out", "results/kernel_e2e.json"])
     print("\nsteps: " + ", ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in ok.items()))
     os.makedirs("results", exist_ok=True)
     with open("results/summary.txt", "w") as f:

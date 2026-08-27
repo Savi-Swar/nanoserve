@@ -369,10 +369,25 @@ class PagedContinuousEngine(Engine):
                 return
 
 
+class FusedPagedEngine(PagedContinuousEngine):
+    """Paged engine with the no-gather decode path: Triton kernel over the
+    pool on CUDA, gather fallback elsewhere. Separate name so benchmarks can
+    compare it against the gather-based paged engine directly."""
+
+    name = "paged_fused"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event,
+                         max_batch=max_batch, num_blocks=num_blocks,
+                         block_size=block_size, fused=True)
+
+
 ENGINES = {
     NaiveEngine.name: NaiveEngine,
     StaticBatchEngine.name: StaticBatchEngine,
     ContinuousBatchEngine.name: ContinuousBatchEngine,
     PagedContinuousEngine.name: PagedContinuousEngine,
+    FusedPagedEngine.name: FusedPagedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)

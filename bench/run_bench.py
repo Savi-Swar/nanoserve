@@ -62,7 +62,7 @@ def run(args, model: ModelRunner | None = None):
         cfg = dict(batch_size=args.batch_size, max_wait=args.max_wait)
     elif args.engine == "continuous":
         cfg = dict(max_batch=args.max_batch)
-    elif args.engine == "paged":
+    elif args.engine in ("paged", "paged_fused"):
         cfg = dict(max_batch=args.max_batch, num_blocks=getattr(args, "num_blocks", 4096))
     engine = ENGINES[args.engine](model, on_finish=on_finish, **cfg)
     engine.start()
