@@ -151,12 +151,53 @@ def write_summary(ok):
     print("wrote results/summary.txt")
 
 
+def read_mode() -> str:
+    """The Kaggle notebook always runs this script verbatim, so the committed
+    mode file is how a push selects what the next headless run does.
+    'full' = the whole pipeline; 'kernel' = Triton kernel tests + microbench
+    only (fast iteration loop for kernel work)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpu_run_mode.txt")
+    try:
+        with open(path) as f:
+            return f.read().strip() or "full"
+    except OSError:
+        return "full"
+
+
+def kernel_run():
+    import torch
+    import transformers
+    print(f"torch {torch.__version__}  transformers {transformers.__version__}")
+    try:
+        import triton
+        print(f"triton {triton.__version__}")
+    except ImportError:
+        print("[!] triton not importable")
+    ok = {}
+    ok["kernel_tests"] = step("triton kernel equivalence tests",
+                              ["pytest", "tests/test_kernel_equivalence.py", "-v",
+                               "--tb=short"])
+    ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"])
+    print("\nsteps: " + ", ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in ok.items()))
+    os.makedirs("results", exist_ok=True)
+    with open("results/summary.txt", "w") as f:
+        f.write("kernel-mode run\n" + ", ".join(
+            f"{k}={'ok' if v else 'FAIL'}" for k, v in ok.items()) + "\n")
+
+
 def main():
     if shutil.which("nvidia-smi"):
         subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
                         "--format=csv"], check=False)
     else:
         print("[!] no nvidia-smi; is this a CUDA box? vLLM will fail, util will be n/a.")
+
+    mode = read_mode()
+    if mode == "kernel":
+        print(">>> mode: kernel (tests + microbench only; set "
+              "scripts/gpu_run_mode.txt to 'full' for the whole pipeline)")
+        kernel_run()
+        return
 
     ok = {}
     # 1. throughput ladder (fp16). Small n + few rates so naive (serial, and the
