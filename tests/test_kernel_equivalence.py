@@ -80,6 +80,43 @@ def test_kernel_noncontiguous_inputs():
 
 
 # --------------------------------------------------------------------------
+# paged kernel (M2): block-table indexing straight over the pool
+# --------------------------------------------------------------------------
+def test_paged_kernel_matches_sdpa():
+    from tests.test_kernel_reference import build_paged_case
+    B, H, Hkv, D, bs = 4, 14, 2, 64, 16
+    lens = [1, 37, 200, 2048]
+    pool_k, pool_v, tables, ck, cv = build_paged_case(B, Hkv, D, lens, bs, seed=21)
+    torch.manual_seed(22)
+    q = torch.randn(B, H, D, dtype=torch.float16)
+    got = pat.paged_decode_attention(
+        q.cuda(), pool_k.half().cuda(), pool_v.half().cuda(),
+        tables.cuda(), torch.tensor(lens).cuda(), bs)
+    for b, L in enumerate(lens):
+        want = sdpa_direct(q[b:b + 1].cuda(),
+                           ck[b:b + 1, :, :L].half().cuda(),
+                           cv[b:b + 1, :, :L].half().cuda())
+        torch.testing.assert_close(got[b:b + 1], want, atol=2e-2, rtol=2e-2)
+
+
+def test_paged_kernel_block_boundaries():
+    from tests.test_kernel_reference import build_paged_case
+    B, H, Hkv, D, bs = 4, 4, 2, 128, 16
+    lens = [16, 17, 128, 129]
+    pool_k, pool_v, tables, ck, cv = build_paged_case(B, Hkv, D, lens, bs, seed=23)
+    torch.manual_seed(24)
+    q = torch.randn(B, H, D, dtype=torch.float16)
+    got = pat.paged_decode_attention(
+        q.cuda(), pool_k.half().cuda(), pool_v.half().cuda(),
+        tables.cuda(), torch.tensor(lens).cuda(), bs)
+    for b, L in enumerate(lens):
+        want = sdpa_direct(q[b:b + 1].cuda(),
+                           ck[b:b + 1, :, :L].half().cuda(),
+                           cv[b:b + 1, :, :L].half().cuda())
+        torch.testing.assert_close(got[b:b + 1], want, atol=2e-2, rtol=2e-2)
+
+
+# --------------------------------------------------------------------------
 # model-level: the oracle
 # --------------------------------------------------------------------------
 PROMPTS = [

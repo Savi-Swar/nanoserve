@@ -144,6 +144,112 @@ def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     return out
 
 
+if HAS_TRITON:
+
+    @triton.jit
+    def _paged_decode_attn_kernel(
+        q_ptr, kp_ptr, vp_ptr, tbl_ptr, lens_ptr, out_ptr,
+        stride_qb, stride_qh, stride_qd,
+        stride_ks, stride_kh, stride_kd,
+        stride_vs, stride_vh, stride_vd,
+        stride_tb, stride_tk,
+        stride_ob, stride_oh, stride_od,
+        D, scale,
+        H: tl.constexpr, GROUP: tl.constexpr, BS: tl.constexpr,
+        BLOCK_L: tl.constexpr, BLOCK_D: tl.constexpr,
+    ):
+        """M2: same online softmax as the contiguous kernel, but K/V rows come
+        straight out of the block pool via the block table. One program per
+        (sequence, head); each program walks only its own sequence's true
+        length, so there is no cross-sequence padding at all."""
+        pid = tl.program_id(0)
+        b = pid // H
+        h = pid % H
+        kvh = h // GROUP
+
+        d_offs = tl.arange(0, BLOCK_D)
+        d_valid = d_offs < D
+        q = tl.load(q_ptr + b * stride_qb + h * stride_qh + d_offs * stride_qd,
+                    mask=d_valid, other=0.0).to(tl.float32)
+        seq_len = tl.load(lens_ptr + b)
+
+        m_i = tl.full([1], value=float("-inf"), dtype=tl.float32)
+        l_i = tl.zeros([1], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+        for start in range(0, seq_len, BLOCK_L):
+            t_offs = start + tl.arange(0, BLOCK_L)
+            t_valid = t_offs < seq_len
+            # logical position -> physical slot through the block table
+            blk = tl.load(tbl_ptr + b * stride_tb + (t_offs // BS) * stride_tk,
+                          mask=t_valid, other=0)
+            slot = blk * BS + t_offs % BS
+            ld_mask = t_valid[:, None] & d_valid[None, :]
+
+            k = tl.load(kp_ptr + slot[:, None] * stride_ks + kvh * stride_kh
+                        + d_offs[None, :] * stride_kd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            s = tl.sum(q[None, :] * k, axis=1) * scale
+            s = tl.where(t_valid, s, float("-inf"))
+
+            m_new = tl.maximum(m_i, tl.max(s, axis=0))
+            m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
+            p = tl.exp(s - m_safe)
+            alpha = tl.exp(m_i - m_safe)
+
+            v = tl.load(vp_ptr + slot[:, None] * stride_vs + kvh * stride_vh
+                        + d_offs[None, :] * stride_vd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
+            l_i = l_i * alpha + tl.sum(p, axis=0)
+            m_i = m_new
+
+        l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+        out = acc / l_safe
+        tl.store(out_ptr + b * stride_ob + h * stride_oh + d_offs * stride_od,
+                 out.to(out_ptr.dtype.element_ty), mask=d_valid)
+
+
+def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor,
+                           block_tables: torch.Tensor, lens: torch.Tensor,
+                           block_size: int, scale: float | None = None,
+                           block_l: int = 128, num_warps: int = 4) -> torch.Tensor:
+    """Fused decode attention straight over the paged pool (no gather).
+
+    q [B, H, D]; k_pool, v_pool flat [n_slots, H_kv, D] (PagedKVStore._flat
+    layout); block_tables [B, max_blocks] int (rows padded with anything, only
+    the first ceil(len/bs) entries of each row are read); lens [B] int true
+    lengths. BLOCK_L must be a multiple of block_size so a tile never
+    straddles a partial block boundary mid-token."""
+    if not HAS_TRITON:
+        raise RuntimeError("triton is not available on this machine")
+    B, H, D = q.shape
+    Hkv = k_pool.shape[1]
+    assert H % Hkv == 0
+    assert block_l % block_size == 0, "BLOCK_L must be a multiple of block_size"
+    if scale is None:
+        scale = D ** -0.5
+    if block_tables.dtype not in (torch.int32, torch.int64):
+        block_tables = block_tables.to(torch.int32)
+    if lens.dtype not in (torch.int32, torch.int64):
+        lens = lens.to(torch.int32)
+    out = torch.empty_like(q)
+    grid = (B * H,)
+    _paged_decode_attn_kernel[grid](
+        q, k_pool, v_pool, block_tables, lens, out,
+        q.stride(0), q.stride(1), q.stride(2),
+        k_pool.stride(0), k_pool.stride(1), k_pool.stride(2),
+        v_pool.stride(0), v_pool.stride(1), v_pool.stride(2),
+        block_tables.stride(0), block_tables.stride(1),
+        out.stride(0), out.stride(1), out.stride(2),
+        D, scale,
+        H=H, GROUP=H // Hkv, BS=block_size,
+        BLOCK_L=block_l, BLOCK_D=triton.next_power_of_2(D),
+        num_warps=num_warps,
+    )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # pure-PyTorch mirror of the exact tiled algorithm, for CPU-side validation
 # ---------------------------------------------------------------------------
@@ -178,6 +284,24 @@ def reference_decode_attention(q, k, v, mask_add=None, scale=None, block_l=128):
                 m = m_new
             out[b, h] = acc / (l if l else 1.0)
     return out.to(q.dtype)
+
+
+def reference_paged_decode_attention(q, k_pool, v_pool, block_tables, lens,
+                                     block_size, scale=None):
+    """Torch mirror of the paged kernel's indexing: gather each sequence's
+    slots through its block table, then run the same tiled algorithm. Exists
+    so the slot math is testable on CPU."""
+    B = q.shape[0]
+    outs = []
+    for b in range(B):
+        L = int(lens[b])
+        pos = torch.arange(L)
+        tbl = block_tables[b].long()
+        slots = tbl[pos // block_size] * block_size + pos % block_size
+        k = k_pool[slots].permute(1, 0, 2)[None]   # [1, Hkv, L, D]
+        v = v_pool[slots].permute(1, 0, 2)[None]
+        outs.append(reference_decode_attention(q[b:b + 1], k, v, scale=scale))
+    return torch.cat(outs, dim=0)
 
 
 # ---------------------------------------------------------------------------

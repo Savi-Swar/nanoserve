@@ -90,3 +90,65 @@ def test_reference_custom_scale():
     ref = reference_decode_attention(q, k, v, scale=scale)
     want = direct_attention(q, k, v, scale=scale)
     torch.testing.assert_close(ref, want, atol=1e-4, rtol=1e-4)
+
+
+# --------------------------------------------------------------------------
+# paged variant: the block-table slot math
+# --------------------------------------------------------------------------
+def build_paged_case(B, Hkv, D, lens, block_size, seed=0):
+    """Random pool + block tables whose physical blocks are deliberately
+    scattered and interleaved across sequences (the case that catches slot
+    math bugs). Returns (pool_k, pool_v, tables, contiguous_k, contiguous_v)."""
+    torch.manual_seed(seed)
+    import math as _m
+    blocks_needed = [max(1, _m.ceil(l / block_size)) for l in lens]
+    total = sum(blocks_needed)
+    perm = torch.randperm(total * 2)[:total]      # scattered physical blocks
+    num_blocks = total * 2
+    pool_k = torch.randn(num_blocks * block_size, Hkv, D)
+    pool_v = torch.randn(num_blocks * block_size, Hkv, D)
+    tables = torch.zeros(B, max(blocks_needed), dtype=torch.long)
+    i = 0
+    for b, nb in enumerate(blocks_needed):
+        tables[b, :nb] = perm[i:i + nb]
+        i += nb
+    # gather ground-truth contiguous KV per sequence (padded to max len)
+    T = max(lens)
+    ck = torch.zeros(B, Hkv, T, D)
+    cv = torch.zeros(B, Hkv, T, D)
+    for b, L in enumerate(lens):
+        pos = torch.arange(L)
+        slots = tables[b][pos // block_size] * block_size + pos % block_size
+        ck[b, :, :L] = pool_k[slots].permute(1, 0, 2)
+        cv[b, :, :L] = pool_v[slots].permute(1, 0, 2)
+    return pool_k, pool_v, tables, ck, cv
+
+
+def test_paged_reference_matches_direct():
+    from server.kernels.paged_attention_triton import reference_paged_decode_attention
+    B, H, Hkv, D, bs = 3, 14, 2, 64, 16
+    lens = [1, 37, 200]                    # 1 token, partial block, many blocks
+    pool_k, pool_v, tables, ck, cv = build_paged_case(B, Hkv, D, lens, bs, seed=9)
+    torch.manual_seed(10)
+    q = torch.randn(B, H, D)
+    got = reference_paged_decode_attention(q, pool_k, pool_v, tables,
+                                           torch.tensor(lens), bs)
+    # ground truth: per-sequence direct attention on the gathered KV
+    for b, L in enumerate(lens):
+        want = direct_attention(q[b:b + 1], ck[b:b + 1, :, :L], cv[b:b + 1, :, :L])
+        torch.testing.assert_close(got[b:b + 1], want, atol=1e-4, rtol=1e-4)
+
+
+def test_paged_reference_block_boundary_lens():
+    """Lengths exactly at and one past block boundaries."""
+    from server.kernels.paged_attention_triton import reference_paged_decode_attention
+    B, H, Hkv, D, bs = 4, 4, 2, 32, 16
+    lens = [16, 17, 32, 33]
+    pool_k, pool_v, tables, ck, cv = build_paged_case(B, Hkv, D, lens, bs, seed=13)
+    torch.manual_seed(14)
+    q = torch.randn(B, H, D)
+    got = reference_paged_decode_attention(q, pool_k, pool_v, tables,
+                                           torch.tensor(lens), bs)
+    for b, L in enumerate(lens):
+        want = direct_attention(q[b:b + 1], ck[b:b + 1, :, :L], cv[b:b + 1, :, :L])
+        torch.testing.assert_close(got[b:b + 1], want, atol=1e-4, rtol=1e-4)
