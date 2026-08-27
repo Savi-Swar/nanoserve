@@ -102,11 +102,17 @@ class PagedBatchState:
     """Same public interface as BatchState (add / step / evict / size /
     any_active / reqs), but KV lives in the paged store."""
 
-    def __init__(self, model: ModelRunner, num_blocks: int = 4096, block_size: int = 16):
+    def __init__(self, model: ModelRunner, num_blocks: int = 4096, block_size: int = 16,
+                 fused: bool = False):
         self.m = model
         self.store = PagedKVStore(model, num_blocks, block_size)
         self.alloc = BlockAllocator(num_blocks, block_size)
         self.block_size = block_size
+        # fused: decode attention reads the pool directly (Triton kernel on
+        # CUDA, gather fallback elsewhere) instead of materializing a
+        # contiguous copy each step. Requires the model to be switched to the
+        # nanoserve attention implementation (kernels.use_triton_attention).
+        self.fused = fused
         self.reqs: list[Request] = []
         self.sids: list[int] = []
         self.true_len: list[int] = []
@@ -177,6 +183,50 @@ class PagedBatchState:
     # --- one decode iteration ------------------------------------------
     @torch.no_grad()
     def step(self) -> list[int]:
+        if self.fused:
+            return self._step_fused()
+        return self._step_gather()
+
+    @torch.no_grad()
+    def _step_fused(self) -> list[int]:
+        """Decode without the gather: NanoPagedCache scatters the new token's
+        KV into the pool inside the model forward, and the registered
+        attention fn reads the pool through the block tables. Same sampling
+        and bookkeeping as the gather path, token for token."""
+        from .kernels.paged_runtime import NanoPagedCache
+
+        dev = self.m.device
+        B = self.size
+        bs = self.block_size
+        T_max = max(self.true_len)
+
+        tables = [self.alloc.tables[self.sids[i]] for i in range(B)]
+        maxb = max(len(t) for t in tables)
+        tables_t = torch.zeros(B, maxb, dtype=torch.long, device=dev)
+        for i, t in enumerate(tables):
+            tables_t[i, :len(t)] = torch.tensor(t, dtype=torch.long, device=dev)
+        lens_t = torch.tensor(self.true_len, dtype=torch.long, device=dev)
+        slots = torch.tensor(
+            [tables[i][self.true_len[i] // bs] * bs + self.true_len[i] % bs
+             for i in range(B)],
+            device=dev, dtype=torch.long)
+
+        cache = NanoPagedCache(self.store, tables_t, lens_t, slots, bs)
+        last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
+        pos = torch.tensor(self.true_len, device=dev).unsqueeze(1)
+        out = self.m.model(
+            input_ids=last,
+            position_ids=pos,
+            past_key_values=cache,
+            use_cache=True,
+            cache_position=torch.tensor([T_max], device=dev),
+        )
+        for i in range(B):
+            self.true_len[i] += 1
+        return self._finish_step(out.logits[:, -1, :])
+
+    @torch.no_grad()
+    def _step_gather(self) -> list[int]:
         dev = self.m.device
         B = self.size
         T_max = max(self.true_len)
@@ -211,7 +261,11 @@ class PagedBatchState:
         for i in range(B):
             self.true_len[i] += 1
 
-        nxt = _sample_batch(out.logits[:, -1, :], self.reqs)
+        return self._finish_step(out.logits[:, -1, :])
+
+    def _finish_step(self, logits) -> list[int]:
+        """Sample the next token per row and retire whatever finished."""
+        nxt = _sample_batch(logits, self.reqs)
         self.m.sync()
         t = time.perf_counter()
 

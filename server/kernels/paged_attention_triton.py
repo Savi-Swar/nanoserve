@@ -314,8 +314,21 @@ def _attention_forward(module, query, key, value, attention_mask,
                        dropout=0.0, scaling=None, sliding_window=None, **kwargs):
     """transformers attention-interface entry point. Kernel path for CUDA
     decode steps (q_len == 1); everything else falls back to SDPA, so prefill
-    and CPU runs are untouched."""
+    and CPU runs are untouched. A PagedKV handle (from NanoPagedCache) means
+    the fused no-gather path: kernel straight over the pool on CUDA, gather +
+    SDPA fallback elsewhere."""
     global KERNEL_CALLS
+    from .paged_runtime import PagedKV, gather_sdpa_fallback
+    if isinstance(key, PagedKV):
+        h = key
+        if HAS_TRITON and query.is_cuda:
+            out = paged_decode_attention(query[:, :, 0, :], h.k_flat, h.v_flat,
+                                         h.tables, h.lens, h.block_size,
+                                         scale=scaling)
+            KERNEL_CALLS += 1
+            return out[:, None, :, :], None
+        return gather_sdpa_fallback(query, h, scale=scaling).transpose(1, 2), None
+
     q_len = query.shape[2]
     use_kernel = (
         HAS_TRITON and query.is_cuda and q_len == 1

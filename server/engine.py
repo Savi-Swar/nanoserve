@@ -288,11 +288,18 @@ class PagedContinuousEngine(Engine):
     name = "paged"
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
-                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
+                 fused: bool = False):
         super().__init__(model, on_finish, on_token, on_event)
         from .paged_exec import PagedBatchState
         self.max_batch = max_batch
-        self.state = PagedBatchState(model, num_blocks=num_blocks, block_size=block_size)
+        if fused:
+            # decode attention reads the paged pool directly (Triton kernel on
+            # CUDA); switches the model's attention implementation over
+            from .kernels.paged_attention_triton import use_triton_attention
+            use_triton_attention(model.model)
+        self.state = PagedBatchState(model, num_blocks=num_blocks,
+                                     block_size=block_size, fused=fused)
 
     def _run(self):
         stop = False
