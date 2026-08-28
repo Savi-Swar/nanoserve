@@ -178,10 +178,12 @@ def kernel_run():
         print("[!] triton not importable")
     ok = {}
     ok["kernel_tests"] = step("triton kernel equivalence tests",
-                              ["pytest", "tests/test_kernel_equivalence.py", "-v",
-                               "--tb=short"])
+                              ["pytest", "tests/test_kernel_equivalence.py", "-q",
+                               "-rf", "--tb=short"])
+    ok["model_diag"] = step("kernel vs sdpa model-level diagnosis",
+                            ["bench.kernel_model_diag", "--device", "cuda"])
     ok["fused_exact"] = step("fused paged path token-exactness",
-                             ["pytest", "tests/test_fused_paged.py", "-v", "--tb=short"],
+                             ["pytest", "tests/test_fused_paged.py", "-q", "--tb=short"],
                              env={"RUN_SLOW": "1"})
     ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"])
     # end-to-end: the same open-loop workload through gather-paged vs fused-paged
