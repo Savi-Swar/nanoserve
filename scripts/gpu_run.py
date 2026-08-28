@@ -24,21 +24,36 @@ PY = sys.executable
 STEP_TIMEOUT = 720  # seconds; hard cap per step so nothing hangs the run
 
 
-def step(title, args, timeout=STEP_TIMEOUT, env=None):
-    print("\n" + "=" * 70)
-    print(f">>> {title}")
-    print("=" * 70)
-    run_env = None
-    if env:
-        run_env = dict(os.environ, **env)
+def step(title, args, timeout=STEP_TIMEOUT, env=None, tee=None):
+    header = "\n" + "=" * 70 + f"\n>>> {title}\n" + "=" * 70
+    print(header)
+    run_env = dict(os.environ, **env) if env else None
+
+    def _log(text):
+        if tee and text:
+            os.makedirs(os.path.dirname(tee) or ".", exist_ok=True)
+            with open(tee, "a") as f:
+                f.write(text)
+
+    _log(header + "\n")
     try:
-        subprocess.run([PY, "-m", *args], check=True, timeout=timeout, env=run_env)
+        r = subprocess.run([PY, "-m", *args], check=True, timeout=timeout,
+                           env=run_env, capture_output=tee is not None, text=True)
+        if tee is not None:
+            print(r.stdout, end="")
+            _log(r.stdout + (r.stderr or ""))
         return True
     except subprocess.TimeoutExpired:
         print(f"[!] step timed out after {timeout}s, skipping")
+        _log(f"[!] step timed out after {timeout}s\n")
         return False
     except subprocess.CalledProcessError as e:
+        if tee is not None:
+            print(e.stdout or "", end="")
+            print(e.stderr or "", end="")
+            _log((e.stdout or "") + (e.stderr or ""))
         print(f"[!] step failed ({e}), continuing")
+        _log(f"[!] step failed ({e})\n")
         return False
 
 
@@ -176,21 +191,22 @@ def kernel_run():
         print(f"triton {triton.__version__}")
     except ImportError:
         print("[!] triton not importable")
+    LOG = "results/kernel_ci_log.txt"
     ok = {}
     ok["kernel_tests"] = step("triton kernel equivalence tests",
                               ["pytest", "tests/test_kernel_equivalence.py", "-q",
-                               "-rf", "--tb=short"])
+                               "-rf", "--tb=short"], tee=LOG)
     ok["model_diag"] = step("kernel vs sdpa model-level diagnosis",
-                            ["bench.kernel_model_diag", "--device", "cuda"])
+                            ["bench.kernel_model_diag", "--device", "cuda"], tee=LOG)
     ok["fused_exact"] = step("fused paged path token-exactness",
                              ["pytest", "tests/test_fused_paged.py", "-q", "--tb=short"],
-                             env={"RUN_SLOW": "1"})
-    ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"])
+                             env={"RUN_SLOW": "1"}, tee=LOG)
+    ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"], tee=LOG)
     # end-to-end: the same open-loop workload through gather-paged vs fused-paged
     ok["e2e"] = step("engine sweep: paged vs paged_fused", [
         "bench.sweep", "--engines", "paged", "paged_fused",
         "--rates", "16", "--n", "32", "--max-tokens", "48", "--device", "cuda",
-        "--out", "results/kernel_e2e.json"])
+        "--out", "results/kernel_e2e.json"], tee=LOG)
     print("\nsteps: " + ", ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in ok.items()))
     os.makedirs("results", exist_ok=True)
     with open("results/summary.txt", "w") as f:
