@@ -149,17 +149,63 @@ def runner():
     return ModelRunner("Qwen/Qwen2.5-0.5B", device="cuda")
 
 
-def test_model_greedy_tokens_identical(runner):
-    baseline = [greedy(runner, p, N_TOKENS) for p in PROMPTS]
+def greedy_forced(runner, prompt, n, force_tokens):
+    """Teacher-forced pass: feed force_tokens, record each step's argmax and
+    the top1-top2 margin of the OTHER implementation's logits at that step."""
+    from server.model import sample
+    from server.request import SamplingParams
+    sp = SamplingParams(max_tokens=n, temperature=0.0, ignore_eos=True)
+    ids = runner.encode(prompt)
+    logits, kv, cur = runner.prefill(ids)
+    out = [int(logits.argmax(-1))]
+    for i in range(n - 1):
+        logits, kv, cur = runner.decode(force_tokens[i], kv, cur)
+        out.append(int(logits.argmax(-1)))
+    return out
+
+
+def test_model_greedy_agreement(runner):
+    """The kernel accumulates in a different order than SDPA, so fp16 logits
+    differ in the last bits and an EXACT tie can argmax either way (measured on
+    T4: one flip in 192 steps, at a step whose sdpa top1-top2 margin was
+    exactly 0.0). Token-identity across different reduction orders is not a
+    valid oracle. The valid one: teacher-forced, every disagreement must sit
+    at a provable near-tie; a flip with a real margin means a real bug."""
+    baselines = []
+    for p in PROMPTS:
+        toks = greedy(runner, p, N_TOKENS)
+        # margins of the sdpa run at every step, teacher-forced on itself
+        from server.request import SamplingParams
+        ids = runner.encode(p)
+        logits, kv, cur = runner.prefill(ids)
+        margins = [float((logits.topk(2).values[0][0] - logits.topk(2).values[0][1]))]
+        for i in range(N_TOKENS - 1):
+            logits, kv, cur = runner.decode(toks[i], kv, cur)
+            t2 = logits.topk(2).values[0]
+            margins.append(float(t2[0] - t2[1]))
+        baselines.append((toks, margins))
 
     calls_before = pat.KERNEL_CALLS
     prev = pat.use_triton_attention(runner.model)
     try:
-        with_kernel = [greedy(runner, p, N_TOKENS) for p in PROMPTS]
+        forced = [greedy_forced(runner, p, N_TOKENS, base[0])
+                  for p, base in zip(PROMPTS, baselines)]
     finally:
         pat.restore_attention(runner.model, prev)
 
     assert pat.KERNEL_CALLS > calls_before, (
         "Triton path never ran; the wrapper silently fell back to SDPA")
-    for p, a, b in zip(PROMPTS, baseline, with_kernel):
-        assert a == b, f"token divergence on prompt {p!r}:\n sdpa   {a}\n triton {b}"
+
+    TIE_MARGIN = 1e-3
+    total = flips = 0
+    for p, (toks, margins), kern in zip(PROMPTS, baselines, forced):
+        for i, (a, b) in enumerate(zip(toks, kern)):
+            total += 1
+            if a != b:
+                flips += 1
+                assert margins[i] < TIE_MARGIN, (
+                    f"non-tie flip on {p!r} step {i}: sdpa margin "
+                    f"{margins[i]:.4f} (>= {TIE_MARGIN}), sdpa {a} vs kernel {b}"
+                    " -> real divergence, not fp16 tie noise")
+    assert flips <= max(2, total // 50), (
+        f"{flips}/{total} flips is too many even for ties")

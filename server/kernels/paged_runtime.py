@@ -84,14 +84,16 @@ class NanoPagedCache(DynamicCache):
     attention fn a PagedKV handle."""
 
     def __init__(self, store, tables: torch.Tensor, lens: torch.Tensor,
-                 slots: torch.Tensor, block_size: int):
+                 slots: torch.Tensor, block_size: int, max_len: int | None = None):
         super().__init__()
         self._store = store
         self._tables = tables
         self._lens = lens              # true lengths BEFORE this step's token
         self._slots = slots            # where each row's new token lands
         self._bs = block_size
-        self._max_len = int(lens.max()) if lens.numel() else 0
+        # caller usually knows max(lens) already; computing it here would sync
+        self._max_len = max_len if max_len is not None else (
+            int(lens.max()) if lens.numel() else 0)
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
         # key_states/value_states: [B, H_kv, 1, D], rope already applied

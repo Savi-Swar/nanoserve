@@ -119,6 +119,25 @@ class PagedBatchState:
         self.last_tok: list[int] = []
         self.active: list[bool] = []
         self._next_sid = 0
+        # fused-path device mirrors of tables/lengths; rebuilt on add/evict
+        # (rare), incremented in place per step so the hot loop stays free of
+        # per-row python
+        self._tables_t: torch.Tensor | None = None
+        self._lens_t: torch.Tensor | None = None
+
+    def _rebuild_fused(self):
+        dev = self.m.device
+        B = self.size
+        if B == 0:
+            self._tables_t = self._lens_t = None
+            return
+        tables = [self.alloc.tables[self.sids[i]] for i in range(B)]
+        maxb = max(len(t) for t in tables)
+        tt = torch.zeros(B, maxb, dtype=torch.long)
+        for i, t in enumerate(tables):
+            tt[i, :len(t)] = torch.tensor(t, dtype=torch.long)
+        self._tables_t = tt.to(dev)
+        self._lens_t = torch.tensor(self.true_len, dtype=torch.long, device=dev)
 
     @property
     def size(self) -> int:
@@ -179,6 +198,8 @@ class PagedBatchState:
             self.true_len.append(L)
             self.last_tok.append(tok)
             self.active.append(True)
+        if self.fused:
+            self._rebuild_fused()
 
     # --- one decode iteration ------------------------------------------
     @torch.no_grad()
@@ -199,21 +220,17 @@ class PagedBatchState:
         B = self.size
         bs = self.block_size
         T_max = max(self.true_len)
+        if self._tables_t is None:
+            self._rebuild_fused()
+        tables_t, lens_t = self._tables_t, self._lens_t
 
-        tables = [self.alloc.tables[self.sids[i]] for i in range(B)]
-        maxb = max(len(t) for t in tables)
-        tables_t = torch.zeros(B, maxb, dtype=torch.long, device=dev)
-        for i, t in enumerate(tables):
-            tables_t[i, :len(t)] = torch.tensor(t, dtype=torch.long, device=dev)
-        lens_t = torch.tensor(self.true_len, dtype=torch.long, device=dev)
-        slots = torch.tensor(
-            [tables[i][self.true_len[i] // bs] * bs + self.true_len[i] % bs
-             for i in range(B)],
-            device=dev, dtype=torch.long)
+        # each row's write slot for this step's token, no per-row python
+        blk = tables_t.gather(1, (lens_t // bs).unsqueeze(1)).squeeze(1)
+        slots = blk * bs + lens_t % bs
 
-        cache = NanoPagedCache(self.store, tables_t, lens_t, slots, bs)
+        cache = NanoPagedCache(self.store, tables_t, lens_t, slots, bs, max_len=T_max)
         last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
-        pos = torch.tensor(self.true_len, device=dev).unsqueeze(1)
+        pos = lens_t.unsqueeze(1)
         out = self.m.model(
             input_ids=last,
             position_ids=pos,
@@ -221,6 +238,7 @@ class PagedBatchState:
             use_cache=True,
             cache_position=torch.tensor([T_max], device=dev),
         )
+        lens_t += 1
         for i in range(B):
             self.true_len[i] += 1
         return self._finish_step(out.logits[:, -1, :])
@@ -295,3 +313,5 @@ class PagedBatchState:
         self.true_len = [self.true_len[i] for i in keep]
         self.last_tok = [self.last_tok[i] for i in keep]
         self.active = [self.active[i] for i in keep]
+        if self.fused:
+            self._rebuild_fused()
