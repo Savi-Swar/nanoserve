@@ -28,11 +28,12 @@ class PagedKV:
     tables: torch.Tensor        # [B, max_blocks] int
     lens: torch.Tensor          # [B] int, INCLUDING the token written this step
     block_size: int
+    max_len: int                # int(lens.max()), precomputed to avoid syncs
 
     @property
     def shape(self):
         B = self.tables.shape[0]
-        return (B, self.k_flat.shape[1], int(self.lens.max()), self.k_flat.shape[2])
+        return (B, self.k_flat.shape[1], self.max_len, self.k_flat.shape[2])
 
     @property
     def dtype(self):
@@ -101,7 +102,8 @@ class NanoPagedCache(DynamicCache):
         vf = self._store._flat(self._store.val[layer_idx])
         kf.index_copy_(0, self._slots, key_states[:, :, 0, :])
         vf.index_copy_(0, self._slots, value_states[:, :, 0, :])
-        handle = PagedKV(kf, vf, self._tables, self._lens + 1, self._bs)
+        handle = PagedKV(kf, vf, self._tables, self._lens + 1, self._bs,
+                         self._max_len + 1)
         return handle, handle
 
     # transformers queries these while building masks / positions; keep them

@@ -50,7 +50,7 @@ def main():
     dev = "cuda"
     print(f"decode attention, H={H} Hkv={Hkv} D={D} T={T} fp16 "
           f"({torch.cuda.get_device_name(0)})")
-    print(f"{'B':>4} {'sdpa ms':>10} {'triton ms':>10} {'speedup':>9}")
+    print(f"{'B':>4} {'sdpa ms':>10} {'triton ms':>10} {'split ms':>12} {'S':>3} {'speedup':>9}")
 
     rows = []
     for B in a.batches:
@@ -65,17 +65,28 @@ def main():
             vv = v.repeat_interleave(group, dim=1)
             return torch.nn.functional.scaled_dot_product_attention(q4, kk, vv)
 
-        def run_triton():
-            return decode_attention(q, k, v)
+        def run_triton1():
+            return decode_attention(q, k, v, num_splits=1)
 
-        # sanity before timing: same answer
-        torch.testing.assert_close(run_triton(), run_sdpa()[:, :, 0, :],
+        def run_triton_auto():
+            return decode_attention(q, k, v)          # auto split policy
+
+        from server.kernels.paged_attention_triton import _auto_splits
+        S = _auto_splits(B, a.heads, T, 128)
+        # sanity before timing: same answers
+        torch.testing.assert_close(run_triton1(), run_sdpa()[:, :, 0, :],
+                                   atol=2e-2, rtol=2e-2)
+        torch.testing.assert_close(run_triton_auto(), run_sdpa()[:, :, 0, :],
                                    atol=2e-2, rtol=2e-2)
         ms_sdpa = time_fn(run_sdpa)
-        ms_tri = time_fn(run_triton)
-        rows.append({"batch": B, "sdpa_ms": ms_sdpa, "triton_ms": ms_tri,
-                     "speedup": ms_sdpa / ms_tri})
-        print(f"{B:>4} {ms_sdpa:>10.3f} {ms_tri:>10.3f} {ms_sdpa / ms_tri:>8.2f}x")
+        ms_tri1 = time_fn(run_triton1)
+        ms_tris = time_fn(run_triton_auto)
+        rows.append({"batch": B, "sdpa_ms": ms_sdpa, "triton_ms": ms_tri1,
+                     "triton_split_ms": ms_tris, "splits": S,
+                     "speedup": ms_sdpa / ms_tri1,
+                     "split_speedup": ms_sdpa / ms_tris})
+        print(f"{B:>4} {ms_sdpa:>10.3f} {ms_tri1:>10.3f} {ms_tris:>12.3f} "
+              f"{S:>3} {ms_sdpa / ms_tris:>8.2f}x")
 
     out = {"heads": H, "kv_heads": Hkv, "head_dim": D, "seq_len": T,
            "device": torch.cuda.get_device_name(0), "rows": rows}

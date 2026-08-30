@@ -152,3 +152,34 @@ def test_paged_reference_block_boundary_lens():
     for b, L in enumerate(lens):
         want = direct_attention(q[b:b + 1], ck[b:b + 1, :, :L], cv[b:b + 1, :, :L])
         torch.testing.assert_close(got[b:b + 1], want, atol=1e-4, rtol=1e-4)
+
+
+# --------------------------------------------------------------------------
+# split-K merge math
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("splits", [1, 2, 4, 7, 64])
+def test_split_reference_matches_direct(splits):
+    from server.kernels.paged_attention_triton import reference_split_decode_attention
+    torch.manual_seed(31 + splits)
+    q = torch.randn(2, 14, 64)
+    k = torch.randn(2, 2, 200, 64)
+    v = torch.randn(2, 2, 200, 64)
+    got = reference_split_decode_attention(q, k, v, num_splits=splits)
+    want = direct_attention(q, k, v)
+    torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-4)
+
+
+def test_split_reference_with_mask_and_empty_chunks():
+    """Masked prefixes can make whole chunks contribute nothing; the merge
+    must drop them cleanly (weight exp(-inf - m*) = 0)."""
+    from server.kernels.paged_attention_triton import reference_split_decode_attention
+    torch.manual_seed(41)
+    q = torch.randn(2, 4, 32)
+    k = torch.randn(2, 2, 96, 32)
+    v = torch.randn(2, 2, 96, 32)
+    mask = torch.zeros(2, 96)
+    mask[0, :50] = float("-inf")   # first several chunks fully masked
+    mask[1, :3] = float("-inf")
+    got = reference_split_decode_attention(q, k, v, mask_add=mask, num_splits=8)
+    want = direct_attention(q, k, v, mask_add=mask)
+    torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-4)

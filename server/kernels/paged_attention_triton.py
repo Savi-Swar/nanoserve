@@ -107,7 +107,8 @@ if HAS_TRITON:
 def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                      mask_add: torch.Tensor | None = None,
                      scale: float | None = None,
-                     block_l: int = 128, num_warps: int = 4) -> torch.Tensor:
+                     block_l: int = 128, num_warps: int = 4,
+                     num_splits: int | None = None) -> torch.Tensor:
     """Fused decode attention over contiguous KV.
 
     q [B, H, D]; k, v [B, H_kv, T, D]; mask_add [B, T] additive float
@@ -127,6 +128,28 @@ def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
         m, smb, smt = mask_add, mask_add.stride(0), mask_add.stride(1)
     else:
         m, smb, smt = q, 0, 0  # dummy pointer, never read
+
+    S = num_splits if num_splits is not None else _auto_splits(B, H, T, block_l)
+    if S > 1:
+        BD = triton.next_power_of_2(D)
+        m_part = torch.empty(B * H * S, device=q.device, dtype=torch.float32)
+        l_part = torch.empty(B * H * S, device=q.device, dtype=torch.float32)
+        acc_part = torch.empty(B * H * S, BD, device=q.device, dtype=torch.float32)
+        _decode_attn_split_kernel[(B * H * S,)](
+            q, k, v, m, m_part, l_part, acc_part,
+            q.stride(0), q.stride(1), q.stride(2),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            smb, smt,
+            T, D, scale,
+            H=H, GROUP=H // Hkv, NUM_SPLITS=S,
+            HAS_MASK=has_mask,
+            BLOCK_L=block_l, BLOCK_D=BD,
+            num_warps=num_warps,
+        )
+        return _merge_partials(m_part.view(B * H, S), l_part.view(B * H, S),
+                               acc_part.view(B * H, S, BD)[:, :, :D], B, H, D, q.dtype)
+
     grid = (B * H,)
     _decode_attn_kernel[grid](
         q, k, v, m, out,
@@ -213,7 +236,9 @@ if HAS_TRITON:
 def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor,
                            block_tables: torch.Tensor, lens: torch.Tensor,
                            block_size: int, scale: float | None = None,
-                           block_l: int = 128, num_warps: int = 4) -> torch.Tensor:
+                           block_l: int = 128, num_warps: int = 4,
+                           num_splits: int | None = None,
+                           max_len: int | None = None) -> torch.Tensor:
     """Fused decode attention straight over the paged pool (no gather).
 
     q [B, H, D]; k_pool, v_pool flat [n_slots, H_kv, D] (PagedKVStore._flat
@@ -234,6 +259,32 @@ def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.
     if lens.dtype not in (torch.int32, torch.int64):
         lens = lens.to(torch.int32)
     out = torch.empty_like(q)
+
+    if num_splits is not None:
+        S = num_splits
+    else:
+        # per-seq lengths vary; size the split policy on the longest
+        T_est = max_len if max_len is not None else int(lens.max())
+        S = _auto_splits(B, H, T_est, block_l)
+    if S > 1:
+        BD = triton.next_power_of_2(D)
+        m_part = torch.empty(B * H * S, device=q.device, dtype=torch.float32)
+        l_part = torch.empty(B * H * S, device=q.device, dtype=torch.float32)
+        acc_part = torch.empty(B * H * S, BD, device=q.device, dtype=torch.float32)
+        _paged_decode_attn_split_kernel[(B * H * S,)](
+            q, k_pool, v_pool, block_tables, lens, m_part, l_part, acc_part,
+            q.stride(0), q.stride(1), q.stride(2),
+            k_pool.stride(0), k_pool.stride(1), k_pool.stride(2),
+            v_pool.stride(0), v_pool.stride(1), v_pool.stride(2),
+            block_tables.stride(0), block_tables.stride(1),
+            D, scale,
+            H=H, GROUP=H // Hkv, BS=block_size, NUM_SPLITS=S,
+            BLOCK_L=block_l, BLOCK_D=BD,
+            num_warps=num_warps,
+        )
+        return _merge_partials(m_part.view(B * H, S), l_part.view(B * H, S),
+                               acc_part.view(B * H, S, BD)[:, :, :D], B, H, D, q.dtype)
+
     grid = (B * H,)
     _paged_decode_attn_kernel[grid](
         q, k_pool, v_pool, block_tables, lens, out,
@@ -248,6 +299,158 @@ def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.
         num_warps=num_warps,
     )
     return out
+
+
+
+if HAS_TRITON:
+
+    @triton.jit
+    def _decode_attn_split_kernel(
+        q_ptr, k_ptr, v_ptr, mask_ptr, m_ptr, l_ptr, acc_ptr,
+        stride_qb, stride_qh, stride_qd,
+        stride_kb, stride_kh, stride_kt, stride_kd,
+        stride_vb, stride_vh, stride_vt, stride_vd,
+        stride_mb, stride_mt,
+        T, D, scale,
+        H: tl.constexpr, GROUP: tl.constexpr, NUM_SPLITS: tl.constexpr,
+        HAS_MASK: tl.constexpr,
+        BLOCK_L: tl.constexpr, BLOCK_D: tl.constexpr,
+    ):
+        """Split-K variant: NUM_SPLITS programs share one (sequence, head),
+        each reducing a chunk of the context into partial (m, l, acc). At
+        small batches one program per (b, h) starves the GPU; this is the
+        flash-decoding fix. Partials merge on the host (log-sum-exp)."""
+        pid = tl.program_id(0)
+        s = pid % NUM_SPLITS
+        bh = pid // NUM_SPLITS
+        b = bh // H
+        h = bh % H
+        kvh = h // GROUP
+
+        chunk = tl.cdiv(T, NUM_SPLITS)
+        t_start = s * chunk
+        t_end = tl.minimum(t_start + chunk, T)
+
+        d_offs = tl.arange(0, BLOCK_D)
+        d_valid = d_offs < D
+        q = tl.load(q_ptr + b * stride_qb + h * stride_qh + d_offs * stride_qd,
+                    mask=d_valid, other=0.0).to(tl.float32)
+
+        m_i = tl.full([1], value=float("-inf"), dtype=tl.float32)
+        l_i = tl.zeros([1], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+        for start in range(t_start, t_end, BLOCK_L):
+            t_offs = start + tl.arange(0, BLOCK_L)
+            t_valid = t_offs < t_end
+            ld_mask = t_valid[:, None] & d_valid[None, :]
+            k = tl.load(k_ptr + b * stride_kb + kvh * stride_kh
+                        + t_offs[:, None] * stride_kt + d_offs[None, :] * stride_kd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            sc = tl.sum(q[None, :] * k, axis=1) * scale
+            if HAS_MASK:
+                mrow = tl.load(mask_ptr + b * stride_mb + t_offs * stride_mt,
+                               mask=t_valid, other=float("-inf")).to(tl.float32)
+                sc = sc + mrow
+            sc = tl.where(t_valid, sc, float("-inf"))
+            m_new = tl.maximum(m_i, tl.max(sc, axis=0))
+            m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
+            p = tl.exp(sc - m_safe)
+            alpha = tl.exp(m_i - m_safe)
+            v = tl.load(v_ptr + b * stride_vb + kvh * stride_vh
+                        + t_offs[:, None] * stride_vt + d_offs[None, :] * stride_vd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
+            l_i = l_i * alpha + tl.sum(p, axis=0)
+            m_i = m_new
+
+        part = bh * NUM_SPLITS + s
+        one = tl.arange(0, 1)
+        tl.store(m_ptr + part + one, m_i)
+        tl.store(l_ptr + part + one, l_i)
+        tl.store(acc_ptr + part * BLOCK_D + d_offs, acc, mask=d_valid)
+
+    @triton.jit
+    def _paged_decode_attn_split_kernel(
+        q_ptr, kp_ptr, vp_ptr, tbl_ptr, lens_ptr, m_ptr, l_ptr, acc_ptr,
+        stride_qb, stride_qh, stride_qd,
+        stride_ks, stride_kh, stride_kd,
+        stride_vs, stride_vh, stride_vd,
+        stride_tb, stride_tk,
+        D, scale,
+        H: tl.constexpr, GROUP: tl.constexpr, BS: tl.constexpr,
+        NUM_SPLITS: tl.constexpr,
+        BLOCK_L: tl.constexpr, BLOCK_D: tl.constexpr,
+    ):
+        pid = tl.program_id(0)
+        s = pid % NUM_SPLITS
+        bh = pid // NUM_SPLITS
+        b = bh // H
+        h = bh % H
+        kvh = h // GROUP
+
+        seq_len = tl.load(lens_ptr + b)
+        chunk = tl.cdiv(seq_len, NUM_SPLITS)
+        t_start = s * chunk
+        t_end = tl.minimum(t_start + chunk, seq_len)
+
+        d_offs = tl.arange(0, BLOCK_D)
+        d_valid = d_offs < D
+        q = tl.load(q_ptr + b * stride_qb + h * stride_qh + d_offs * stride_qd,
+                    mask=d_valid, other=0.0).to(tl.float32)
+
+        m_i = tl.full([1], value=float("-inf"), dtype=tl.float32)
+        l_i = tl.zeros([1], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+        for start in range(t_start, t_end, BLOCK_L):
+            t_offs = start + tl.arange(0, BLOCK_L)
+            t_valid = t_offs < t_end
+            blk = tl.load(tbl_ptr + b * stride_tb + (t_offs // BS) * stride_tk,
+                          mask=t_valid, other=0)
+            slot = blk * BS + t_offs % BS
+            ld_mask = t_valid[:, None] & d_valid[None, :]
+            k = tl.load(kp_ptr + slot[:, None] * stride_ks + kvh * stride_kh
+                        + d_offs[None, :] * stride_kd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            sc = tl.sum(q[None, :] * k, axis=1) * scale
+            sc = tl.where(t_valid, sc, float("-inf"))
+            m_new = tl.maximum(m_i, tl.max(sc, axis=0))
+            m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
+            p = tl.exp(sc - m_safe)
+            alpha = tl.exp(m_i - m_safe)
+            v = tl.load(vp_ptr + slot[:, None] * stride_vs + kvh * stride_vh
+                        + d_offs[None, :] * stride_vd,
+                        mask=ld_mask, other=0.0).to(tl.float32)
+            acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
+            l_i = l_i * alpha + tl.sum(p, axis=0)
+            m_i = m_new
+
+        part = bh * NUM_SPLITS + s
+        one = tl.arange(0, 1)
+        tl.store(m_ptr + part + one, m_i)
+        tl.store(l_ptr + part + one, l_i)
+        tl.store(acc_ptr + part * BLOCK_D + d_offs, acc, mask=d_valid)
+
+
+def _auto_splits(B: int, H: int, T: int, block_l: int) -> int:
+    """More programs until the GPU has work: target ~128 concurrent programs
+    (a few waves on a 40-SM T4). Never split below one tile per chunk."""
+    progs = B * H
+    if progs >= 128 or T <= 2 * block_l:
+        return 1
+    by_occupancy = max(1, 128 // progs)
+    by_length = max(1, (T + block_l - 1) // block_l)
+    return int(min(by_occupancy, by_length, 32))
+
+
+def _merge_partials(m_part, l_part, acc_part, B, H, D, dtype):
+    """Log-sum-exp merge of split partials. m/l: [B*H, S]; acc: [B*H, S, D]."""
+    m_star = m_part.max(dim=1).values                      # [BH]
+    w = torch.exp(m_part - m_star[:, None])                # -inf chunks -> 0
+    l_star = (l_part * w).sum(dim=1)                       # [BH]
+    out = (acc_part * w[:, :, None]).sum(dim=1) / l_star[:, None]
+    return out.view(B, H, D).to(dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +507,48 @@ def reference_paged_decode_attention(q, k_pool, v_pool, block_tables, lens,
     return torch.cat(outs, dim=0)
 
 
+
+
+def reference_split_decode_attention(q, k, v, mask_add=None, scale=None,
+                                     num_splits=4):
+    """Torch mirror of the split-K scheme: per-chunk partial (m, l, acc)
+    computed directly, merged with the same log-sum-exp combine the GPU path
+    uses. Validates the merge math on CPU."""
+    B, H, D = q.shape
+    Hkv, T = k.shape[1], k.shape[2]
+    group = H // Hkv
+    if scale is None:
+        scale = D ** -0.5
+    chunk = -(-T // num_splits)
+    out = torch.empty(B, H, D, dtype=torch.float32)
+    for b in range(B):
+        for h in range(H):
+            qq = q[b, h].float()
+            kk = k[b, h // group].float()
+            vv = v[b, h // group].float()
+            ms, ls, accs = [], [], []
+            for s in range(num_splits):
+                t0, t1 = s * chunk, min((s + 1) * chunk, T)
+                if t0 >= t1:
+                    ms.append(_NEG_INF); ls.append(0.0); accs.append(torch.zeros(D))
+                    continue
+                sc = (qq[None, :] * kk[t0:t1]).sum(-1) * scale
+                if mask_add is not None:
+                    sc = sc + mask_add[b, t0:t1].float()
+                m = sc.max().item()
+                if m == _NEG_INF:            # fully masked chunk
+                    ms.append(_NEG_INF); ls.append(0.0); accs.append(torch.zeros(D))
+                    continue
+                p = torch.exp(sc - m)
+                ms.append(m); ls.append(p.sum().item()); accs.append(p @ vv[t0:t1])
+            m_star = max(ms)
+            w = [math.exp(m - m_star) if m != _NEG_INF else 0.0 for m in ms]
+            l_star = sum(l * wi for l, wi in zip(ls, w))
+            acc = sum((a * wi for a, wi in zip(accs, w)), torch.zeros(D))
+            out[b, h] = acc / l_star
+    return out.to(q.dtype)
+
+
 # ---------------------------------------------------------------------------
 # transformers integration: register as a custom attention implementation
 # ---------------------------------------------------------------------------
@@ -324,7 +569,7 @@ def _attention_forward(module, query, key, value, attention_mask,
         if HAS_TRITON and query.is_cuda:
             out = paged_decode_attention(query[:, :, 0, :], h.k_flat, h.v_flat,
                                          h.tables, h.lens, h.block_size,
-                                         scale=scaling)
+                                         scale=scaling, max_len=h.max_len)
             KERNEL_CALLS += 1
             return out[:, None, :, :], None
         return gather_sdpa_fallback(query, h, scale=scaling).transpose(1, 2), None

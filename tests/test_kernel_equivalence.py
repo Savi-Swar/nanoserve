@@ -209,3 +209,51 @@ def test_model_greedy_agreement(runner):
                     " -> real divergence, not fp16 tie noise")
     assert flips <= max(2, total // 50), (
         f"{flips}/{total} flips is too many even for ties")
+
+
+# --------------------------------------------------------------------------
+# split-K (M3): forced split counts must match sdpa exactly like 1-split
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("splits", [2, 3, 8])
+@pytest.mark.parametrize("B,H,Hkv,T,D", [(1, 14, 2, 2048, 64), (4, 14, 2, 333, 64),
+                                          (2, 16, 2, 512, 128)])
+def test_split_kernel_matches_sdpa(splits, B, H, Hkv, T, D):
+    torch.manual_seed(B * 7 + splits)
+    q = torch.randn(B, H, D, device="cuda", dtype=torch.float16)
+    k = torch.randn(B, Hkv, T, D, device="cuda", dtype=torch.float16)
+    v = torch.randn(B, Hkv, T, D, device="cuda", dtype=torch.float16)
+    got = pat.decode_attention(q, k, v, num_splits=splits)
+    want = sdpa_direct(q, k, v)
+    torch.testing.assert_close(got, want, atol=2e-2, rtol=2e-2)
+
+
+def test_split_kernel_with_mask():
+    torch.manual_seed(51)
+    B, H, Hkv, T, D = 4, 14, 2, 700, 64
+    q = torch.randn(B, H, D, device="cuda", dtype=torch.float16)
+    k = torch.randn(B, Hkv, T, D, device="cuda", dtype=torch.float16)
+    v = torch.randn(B, Hkv, T, D, device="cuda", dtype=torch.float16)
+    mask = torch.zeros(B, T, device="cuda")
+    for b in range(B):
+        mask[b, :(b * 173) % (T - 1)] = torch.finfo(torch.float16).min
+    got = pat.decode_attention(q, k, v, mask_add=mask, num_splits=5)
+    want = sdpa_direct(q, k, v, mask_add=mask)
+    torch.testing.assert_close(got, want, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("splits", [2, 6])
+def test_split_paged_kernel_matches_sdpa(splits):
+    from tests.test_kernel_reference import build_paged_case
+    B, H, Hkv, D, bs = 4, 14, 2, 64, 16
+    lens = [1, 37, 500, 2048]
+    pool_k, pool_v, tables, ck, cv = build_paged_case(B, Hkv, D, lens, bs, seed=61)
+    torch.manual_seed(62)
+    q = torch.randn(B, H, D, dtype=torch.float16)
+    got = pat.paged_decode_attention(
+        q.cuda(), pool_k.half().cuda(), pool_v.half().cuda(),
+        tables.cuda(), torch.tensor(lens).cuda(), bs, num_splits=splits)
+    for b, L in enumerate(lens):
+        want = sdpa_direct(q[b:b + 1].cuda(),
+                           ck[b:b + 1, :, :L].half().cuda(),
+                           cv[b:b + 1, :, :L].half().cuda())
+        torch.testing.assert_close(got[b:b + 1], want, atol=2e-2, rtol=2e-2)
