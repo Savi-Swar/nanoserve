@@ -147,8 +147,7 @@ def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
             BLOCK_L=block_l, BLOCK_D=BD,
             num_warps=num_warps,
         )
-        return _merge_partials(m_part.view(B * H, S), l_part.view(B * H, S),
-                               acc_part.view(B * H, S, BD)[:, :, :D], B, H, D, q.dtype)
+        return _merge_on_device(m_part, l_part, acc_part, out, B, H, D, S, BD)
 
     grid = (B * H,)
     _decode_attn_kernel[grid](
@@ -282,8 +281,7 @@ def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.
             BLOCK_L=block_l, BLOCK_D=BD,
             num_warps=num_warps,
         )
-        return _merge_partials(m_part.view(B * H, S), l_part.view(B * H, S),
-                               acc_part.view(B * H, S, BD)[:, :, :D], B, H, D, q.dtype)
+        return _merge_on_device(m_part, l_part, acc_part, out, B, H, D, S, BD)
 
     grid = (B * H,)
     _paged_decode_attn_kernel[grid](
@@ -431,6 +429,54 @@ if HAS_TRITON:
         tl.store(m_ptr + part + one, m_i)
         tl.store(l_ptr + part + one, l_i)
         tl.store(acc_ptr + part * BLOCK_D + d_offs, acc, mask=d_valid)
+
+
+
+if HAS_TRITON:
+
+    @triton.jit
+    def _merge_partials_kernel(
+        m_ptr, l_ptr, acc_ptr, out_ptr,
+        stride_ob, stride_oh, stride_od,
+        D,
+        H: tl.constexpr, NUM_SPLITS: tl.constexpr,
+        BLOCK_S: tl.constexpr, BLOCK_D: tl.constexpr,
+    ):
+        """One program per (b, h): log-sum-exp merge of the split partials in
+        a single launch. The host-side torch merge cost ~6 kernel launches,
+        which at decode sizes was worth more than the split saved."""
+        pid = tl.program_id(0)
+        s_offs = tl.arange(0, BLOCK_S)
+        s_valid = s_offs < NUM_SPLITS
+        base = pid * NUM_SPLITS
+        m = tl.load(m_ptr + base + s_offs, mask=s_valid, other=float("-inf"))
+        l = tl.load(l_ptr + base + s_offs, mask=s_valid, other=0.0)
+        m_star = tl.max(m, axis=0)
+        m_safe = tl.where(m_star == float("-inf"), 0.0, m_star)
+        w = tl.exp(m - m_safe)
+        l_star = tl.sum(l * w, axis=0)
+        l_star = tl.where(l_star == 0.0, 1.0, l_star)
+
+        d_offs = tl.arange(0, BLOCK_D)
+        d_valid = d_offs < D
+        acc = tl.load(acc_ptr + (base + s_offs)[:, None] * BLOCK_D + d_offs[None, :],
+                      mask=s_valid[:, None] & d_valid[None, :], other=0.0)
+        out = tl.sum(acc * w[:, None], axis=0) / l_star
+        b = pid // H
+        h = pid % H
+        tl.store(out_ptr + b * stride_ob + h * stride_oh + d_offs * stride_od,
+                 out.to(out_ptr.dtype.element_ty), mask=d_valid)
+
+
+def _merge_on_device(m_part, l_part, acc_part, out, B, H, D, S, BD):
+    _merge_partials_kernel[(B * H,)](
+        m_part, l_part, acc_part, out,
+        out.stride(0), out.stride(1), out.stride(2),
+        D, H=H, NUM_SPLITS=S,
+        BLOCK_S=triton.next_power_of_2(S), BLOCK_D=BD,
+        num_warps=1,
+    )
+    return out
 
 
 def _auto_splits(B: int, H: int, T: int, block_l: int) -> int:
