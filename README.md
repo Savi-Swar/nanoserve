@@ -49,6 +49,16 @@ continuous sustains roughly 200x naive.
 - 8-bit KV is nearly free (perplexity 27.9 vs 28.7 fp16, half the memory). Prefix
   caching saves 70% of prefill on shared prompts. My naive 4-bit quantizer falls
   apart (perplexity 443).
+- A C++ port of the scheduler hot path only claims what a pre-written gate
+  licenses: Python overhead is 9.5-15.8% of a decode step on the gather path but
+  0.2-3.2% on the fused path, so the C++ story is proven differently - identical
+  scheduling decisions by hash over replayed traces, a lock-free allocator whose
+  naive CAS loop collapsed ~100x under contention until backoff fixed it, and
+  serving token-identical output through the C++ allocator ([docs/cpp.md](docs/cpp.md)).
+- Tail measurement caught two real bugs: a 2-second worst-case inter-token gap
+  (Triton JIT compiling a kernel variant inside a request; every variant now
+  compiles at engine start) and an admission wedge where a request too big to
+  ever fit killed the engine thread and starved the queue (now rejected).
 
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).

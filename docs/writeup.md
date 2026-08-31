@@ -477,6 +477,50 @@ finding that is part of the record). Full details and the two instructive
 failures (the merge that cost more than the split saved; the tie) are in
 docs/kernel.md.
 
+## The C++ hot path
+
+Before porting anything to C++ I wrote down a decision rule: measure the
+Python share of a decode step, and only claim an end-to-end tail win if that
+share is at least 15%. The measured table was humbling in the right way:
+the gather-paged path crosses the line (9.5-15.8%), but the fused path the
+kernel work produced had already cut it to 0.2-3.2%. So the port's claims
+are scoped to what the gate licenses.
+
+What the C++ pillar actually established, each with its own instrument:
+
+- The boundary costs more than the work. A C++ allocator called per
+  operation through pybind11 is slower than the Python it replaces (10.0 vs
+  10.7 M ops/s); batched into one crossing it is 2.9x. The scheduler
+  therefore crosses the boundary exactly once per decode step.
+- Equivalence you can hash. A replay harness drives the Python and C++
+  schedulers through identical traces and hashes every decision (admissions
+  with block tables, per-step slots, finishes). Hashes match across seeds,
+  both sides are deterministic, and the C++ bookkeeping is 1.8-1.9x faster.
+  An engine variant then serves real requests through the C++ allocator,
+  token-identical to naive.
+- Lock-free means progress, not speed. Under contention the textbook
+  Treiber stack collapsed ~100x at 8 threads (every failed CAS re-hammers
+  the head cache line) while the mutex degraded 3x. Exponential backoff on
+  CAS failure restored it: identical uncontended, 5.4x the mutex at 8
+  threads. The naive loop stays in the bench so the collapse reproduces.
+- Tails measured without lying. Open-loop arrivals, pooled raw inter-token
+  gaps, no p99.9 below 100k samples, and a two-engine difference is claimed
+  only when per-run p99 ranges don't overlap. First claim to survive the
+  rule: the kernel cuts continuous p99 ITL 77.3 to 70.4 ms. The max column
+  then caught a real bug: 2s worst gaps from Triton JIT-compiling a kernel
+  variant inside a request; fixed by compiling every variant at engine
+  construction.
+- Storms as a test subject. A seeded harness cancels requests mid-stream
+  (gradual, burst, and one-by-one in random order) and reports what the
+  storm does to the survivors' tails, then asserts the accounting: every
+  block back, every request terminal. Writing it found a wedge: a request
+  whose reservation exceeds the whole pool was force-admitted into an
+  allocator exception that killed the engine thread and starved the queue
+  behind it (the same failure class as vLLM issue 39734). It is now
+  rejected at admission.
+
+Full detail in docs/cpp.md.
+
 ## Serving
 
 The scheduler runs behind an HTTP server (`serve.py`, `server/service.py`), not
@@ -562,6 +606,14 @@ For an ML-infra / systems screener:
   the PyTorch SDPA path at op level, lifting the serving ladder to 10.5x naive
   and moving the measured decode-scaling knee from B~4 to beyond the testable
   range; token-exactness held via a tie-aware oracle.
+- Moved the scheduler's hot path to C++ (lock-free block allocator, one
+  pybind crossing per decode step) after a written 15% overhead gate scoped
+  what it could claim; proved Python/C++ equivalence by hashing every
+  scheduling decision over replayed traces, measured a naive Treiber stack
+  collapsing ~100x under contention and fixed it with CAS backoff (5.4x the
+  mutex at 8 threads), and found two real bugs with the measurement tools
+  themselves: a 2s JIT compile hiding inside inter-token latency and an
+  admission wedge that starved the queue behind an unservable request.
 - Built an LLM inference server from scratch (Python/PyTorch, no custom CUDA):
   naive to static to continuous batching to a paged KV cache, 9.6x throughput
   over naive at p99 TTFT 2.0s (from 52s), reaching 16% of vLLM on the same T4;
