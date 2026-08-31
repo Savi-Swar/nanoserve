@@ -255,6 +255,20 @@ def main():
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "latency":
+        print(">>> mode: latency (ITL tails, open-loop, 5 runs/engine)")
+        LOG = "results/kernel_ci_log.txt"
+        step("ITL tails: paged vs paged_fused", [
+            "bench.latency_study", "--engines", "paged", "paged_fused",
+            "--device", "cuda"], tee=LOG, timeout=1500)
+        step("ITL tails: continuous vs continuous_fused", [
+            "bench.latency_study", "--engines", "continuous", "continuous_fused",
+            "--device", "cuda", "--out", "results/latency_cont.json"],
+            tee=LOG, timeout=1500)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("latency-mode run\n")
+        return
 
     ok = {}
     # 1. throughput ladder (fp16). Small n + few rates so naive (serial, and the

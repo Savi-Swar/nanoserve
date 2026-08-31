@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench cpp audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench cpp sched-replay latency audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -100,6 +100,12 @@ cpp:
 	c++ -O3 -std=c++17 -shared -fPIC $$(python3 -m pybind11 --includes) \
 	  cpp/binding.cpp -o nanoserve_core$$(python3-config --extension-suffix) \
 	  $$(if [ "$$(uname)" = "Darwin" ]; then echo "-undefined dynamic_lookup"; fi)
+
+sched-replay:
+	python -m bench.sched_replay
+
+latency:
+	python -m bench.latency_study --engines paged paged_fused --device $(DEVICE)
 
 all: memory bench plot
 

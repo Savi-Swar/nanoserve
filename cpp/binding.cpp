@@ -5,6 +5,7 @@
 #include <pybind11/stl.h>
 
 #include "allocator.hpp"
+#include "scheduler.hpp"
 
 namespace py = pybind11;
 
@@ -50,4 +51,20 @@ PYBIND11_MODULE(nanoserve_core, m) {
                  return new_blocks;
              },
              py::arg("sids"));
+
+    py::class_<nano::Scheduler>(m, "Scheduler")
+        .def(py::init<uint32_t, uint32_t, bool>(),
+             py::arg("num_blocks"), py::arg("block_size"),
+             py::arg("lockfree") = false)
+        .def_property_readonly("size", &nano::Scheduler::size)
+        .def_property_readonly("num_free_blocks", &nano::Scheduler::num_free_blocks)
+        .def("can_admit", &nano::Scheduler::can_admit,
+             py::arg("prompt_len"), py::arg("max_new"))
+        .def("admit", &nano::Scheduler::admit,
+             py::arg("rid"), py::arg("prompt_len"), py::arg("max_new"))
+        .def("table", &nano::Scheduler::table, py::arg("sid"),
+             py::return_value_policy::copy)
+        .def("row_ids", &nano::Scheduler::row_ids)
+        .def("plan_step", &nano::Scheduler::plan_step)
+        .def("commit_step", &nano::Scheduler::commit_step, py::arg("eos_hit"));
 }

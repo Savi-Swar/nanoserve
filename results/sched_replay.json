@@ -1,0 +1,36 @@
+{
+  "max_batch": 16,
+  "num_blocks": 2048,
+  "rows": [
+    {
+      "seed": 0,
+      "steps": 2406,
+      "hash": "56271d35ef6b1a37",
+      "py_deterministic": true,
+      "py_s": 0.008998834062367678,
+      "cpp_matches_py": true,
+      "cpp_deterministic": true,
+      "cpp_s": 0.005062708863988519
+    },
+    {
+      "seed": 1,
+      "steps": 2442,
+      "hash": "519cf8ca91ab9fa5",
+      "py_deterministic": true,
+      "py_s": 0.009586374973878264,
+      "cpp_matches_py": true,
+      "cpp_deterministic": true,
+      "cpp_s": 0.005026916041970253
+    },
+    {
+      "seed": 2,
+      "steps": 2463,
+      "hash": "045493b50dc0c2d9",
+      "py_deterministic": true,
+      "py_s": 0.009704416850581765,
+      "cpp_matches_py": true,
+      "cpp_deterministic": true,
+      "cpp_s": 0.005164375063031912
+    }
+  ]
+}
