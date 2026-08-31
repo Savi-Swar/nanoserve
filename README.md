@@ -55,10 +55,14 @@ continuous sustains roughly 200x naive.
   scheduling decisions by hash over replayed traces, a lock-free allocator whose
   naive CAS loop collapsed ~100x under contention until backoff fixed it, and
   serving token-identical output through the C++ allocator ([docs/cpp.md](docs/cpp.md)).
+- The kernel's latency claim survived the noise rule twice: continuous_fused
+  p99 inter-token latency 67-70 ms vs continuous 74-77 ms, per-run ranges
+  non-overlapping in two independent runs.
 - Tail measurement caught two real bugs: a 2-second worst-case inter-token gap
   (Triton JIT compiling a kernel variant inside a request; every variant now
-  compiles at engine start) and an admission wedge where a request too big to
-  ever fit killed the engine thread and starved the queue (now rejected).
+  compiles at engine start, and the re-run measured max falling from 1380 to
+  155 ms) and an admission wedge where a request too big to ever fit killed
+  the engine thread and starved the queue (now rejected).
 
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).

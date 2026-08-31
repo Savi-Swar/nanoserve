@@ -160,13 +160,17 @@ First results from the T4 (rate 8 req/s, 250 requests, 96 tokens, 5 runs,
 
 (ms). The kernel's tail claim survives the noise rule for the continuous
 pair: p99 ranges [69.6, 70.9] vs [76.7, 78.4] do not overlap, a 9% p99 cut.
-The paged pair's ranges overlap, so that comparison stays unclaimed.
+The paged pair's ranges overlap, so that comparison stays unclaimed. A
+second independent run reproduced the claim (67.5 vs 73.6 ms, ranges again
+disjoint) and put p99.9 at 74.7 vs 84.2.
 
-And the max column caught a real bug. Both fused engines show a 1.4-2.0s
+And the max column caught a real bug. Both fused engines showed a 1.4-2.0s
 worst gap on an otherwise sub-111ms p99.9: the Triton JIT compiling a new
 NUM_SPLITS specialization the first time a request's length crossed a split
 threshold, inside that request's inter-token latency. The fix compiles every
 variant at engine construction (warm_decode_kernels); batch size is not a
-specialization key, so a handful of tiny launches covers the space. This is
-the argument for reporting max alongside percentiles: p99.9 absorbed the
-spike and said nothing.
+specialization key, so a handful of tiny launches covers the space. The
+re-run confirms it: paged_fused max fell from 1380 to 155 ms (now below the
+gather engine's own max) and continuous_fused from 2045 to 456. This is the
+argument for reporting max alongside percentiles: p99.9 absorbed the spike
+and said nothing.
