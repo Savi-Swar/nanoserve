@@ -17,10 +17,24 @@ at least 15% of a decode step, the port gets an end-to-end tail-latency
 framing. Below that, the port's story is the microbenchmarks, determinism, and
 cancel-storm tails, and it says so honestly.
 
-On the T4: the plain batched state measures ~0% (the forward is the step).
-The paged state measures 11.1% at B=1 and 16.0% at B=8. The paged path
-crosses the line: block-table bookkeeping, slot math, and gather assembly are
-real end-to-end costs, and that is exactly the part the C++ scheduler owns.
+The full table from the T4 (Qwen2.5-0.5B, 256-token context, 30 timed steps):
+
+| state       | B=1   | B=8   | B=16  |
+|-------------|-------|-------|-------|
+| batched     | 0.0%  | 3.4%  | 0.0%  |
+| paged       | 12.8% | 9.5%  | 15.8% |
+| paged_fused | 0.2%  | 2.3%  | 3.2%  |
+
+Two conclusions, one of them uncomfortable. The gather-paged path crosses the
+line at B=16: block-table bookkeeping, slot math, and gather assembly are
+real end-to-end costs. But the fused path, which replaced the per-step gather
+with persistent device tensors and the Triton kernel, already ate almost all
+of that overhead in Python. The C++ port's end-to-end tail claim applies to
+the path we no longer ship as the best engine. So the port is framed by what
+the gate actually licenses: the bookkeeping speedup is measured at the
+microbench level, the equivalence is proven by replay, and the contention and
+cancel-storm behavior carry the systems story. Writing the decision rule down
+before measuring is what keeps this honest.
 
 ## The boundary costs more than the work
 
@@ -133,3 +147,26 @@ benchmarking literature keeps having to re-teach:
   wearing a suit.
 - Noise gets a vote. Each engine runs 5 times; two engines are called
   different at p99 only if their per-run p99 ranges do not overlap.
+
+First results from the T4 (rate 8 req/s, 250 requests, 96 tokens, 5 runs,
+117k pooled ITLs per engine):
+
+| engine           | p50  | p90  | p99   | p99.9 | max    |
+|------------------|------|------|-------|-------|--------|
+| continuous       | 32.6 | 72.5 | 77.3  | 90.5  | 233    |
+| continuous_fused | 31.0 | 65.8 | 70.4  | 82.4  | 2045   |
+| paged            | 43.3 | 84.2 | 123.2 | 132.4 | 176    |
+| paged_fused      | 34.5 | 70.2 | 94.8  | 110.8 | 1380   |
+
+(ms). The kernel's tail claim survives the noise rule for the continuous
+pair: p99 ranges [69.6, 70.9] vs [76.7, 78.4] do not overlap, a 9% p99 cut.
+The paged pair's ranges overlap, so that comparison stays unclaimed.
+
+And the max column caught a real bug. Both fused engines show a 1.4-2.0s
+worst gap on an otherwise sub-111ms p99.9: the Triton JIT compiling a new
+NUM_SPLITS specialization the first time a request's length crossed a split
+threshold, inside that request's inter-token latency. The fix compiles every
+variant at engine construction (warm_decode_kernels); batch size is not a
+specialization key, so a handful of tiny launches covers the space. This is
+the argument for reporting max alongside percentiles: p99.9 absorbed the
+spike and said nothing.

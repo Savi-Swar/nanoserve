@@ -289,7 +289,7 @@ class PagedContinuousEngine(Engine):
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
                  max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
-                 fused: bool = False):
+                 fused: bool = False, alloc_backend: str = "py"):
         super().__init__(model, on_finish, on_token, on_event)
         from .paged_exec import PagedBatchState
         self.max_batch = max_batch
@@ -302,7 +302,8 @@ class PagedContinuousEngine(Engine):
             self._prev_attn_impl = use_triton_attention(model.model)
             warm_decode_kernels(model.model, block_size=block_size)
         self.state = PagedBatchState(model, num_blocks=num_blocks,
-                                     block_size=block_size, fused=fused)
+                                     block_size=block_size, fused=fused,
+                                     alloc_backend=alloc_backend)
 
     def _run(self):
         stop = False
@@ -384,16 +385,33 @@ class FusedPagedEngine(PagedContinuousEngine):
     name = "paged_fused"
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
-                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
+                 alloc_backend: str = "py"):
         super().__init__(model, on_finish, on_token, on_event,
                          max_batch=max_batch, num_blocks=num_blocks,
-                         block_size=block_size, fused=True)
+                         block_size=block_size, fused=True,
+                         alloc_backend=alloc_backend)
         self._attn_model = model.model
 
     def stop(self):
         super().stop()
         from .kernels.paged_attention_triton import restore_attention
         restore_attention(self._attn_model, self._prev_attn_impl)
+
+
+class CppPagedEngine(FusedPagedEngine):
+    """The fused paged engine with block bookkeeping in nanoserve_core (the
+    C++ allocator). Serving through it is the integration proof for the C++
+    pillar: the replay harness shows the decisions match by hash, this shows
+    the served tokens match. Requires the extension (make cpp)."""
+
+    name = "paged_fused_cpp"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event,
+                         max_batch=max_batch, num_blocks=num_blocks,
+                         block_size=block_size, alloc_backend="cpp")
 
 
 class ContinuousFusedEngine(ContinuousBatchEngine):
@@ -425,5 +443,6 @@ ENGINES = {
     PagedContinuousEngine.name: PagedContinuousEngine,
     FusedPagedEngine.name: FusedPagedEngine,
     ContinuousFusedEngine.name: ContinuousFusedEngine,
+    CppPagedEngine.name: CppPagedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)

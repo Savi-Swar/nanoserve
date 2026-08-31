@@ -98,15 +98,55 @@ class PagedKVStore:
         return keys, vals, mask
 
 
+class CppAllocator:
+    """The Python BlockAllocator's surface over the C++ one, so the paged
+    state can run its block bookkeeping in nanoserve_core unchanged. On the
+    fused path the allocator is touched only at admission and eviction (blocks
+    are reserved up front, steps grow device-side counters), so these
+    crossings are rare by design and the per-op boundary tax never applies."""
+
+    class _Tables:
+        def __init__(self, core):
+            self._core = core
+
+        def __getitem__(self, sid):
+            return self._core.table(sid)
+
+    def __init__(self, num_blocks: int, block_size: int):
+        import nanoserve_core as nc
+        self._core = nc.BlockAllocator(num_blocks, block_size)
+        self.tables = self._Tables(self._core)
+
+    @property
+    def num_free(self) -> int:
+        return self._core.num_free
+
+    def can_admit(self, n_tokens: int) -> bool:
+        return self._core.can_admit(n_tokens)
+
+    def add_seq(self, sid: int, n_tokens: int):
+        from .paged_cache import OutOfBlocks
+        if not self._core.can_admit(n_tokens):
+            raise OutOfBlocks()
+        self._core.add_seq(sid, n_tokens)
+        return self._core.table(sid)
+
+    def free_seq(self, sid: int):
+        self._core.free_seq(sid)
+
+
 class PagedBatchState:
     """Same public interface as BatchState (add / step / evict / size /
     any_active / reqs), but KV lives in the paged store."""
 
     def __init__(self, model: ModelRunner, num_blocks: int = 4096, block_size: int = 16,
-                 fused: bool = False):
+                 fused: bool = False, alloc_backend: str = "py"):
         self.m = model
         self.store = PagedKVStore(model, num_blocks, block_size)
-        self.alloc = BlockAllocator(num_blocks, block_size)
+        if alloc_backend == "cpp":
+            self.alloc = CppAllocator(num_blocks, block_size)
+        else:
+            self.alloc = BlockAllocator(num_blocks, block_size)
         self.block_size = block_size
         # fused: decode attention reads the pool directly (Triton kernel on
         # CUDA, gather fallback elsewhere) instead of materializing a

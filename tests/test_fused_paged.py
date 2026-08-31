@@ -105,3 +105,33 @@ def test_fused_midstream_admit(runner):
 
     assert ra.output_tokens == want_a
     assert rb.output_tokens == want_b
+
+
+def test_cpp_alloc_backend_matches_naive(runner):
+    """Same tokens with block bookkeeping in nanoserve_core: the served-token
+    counterpart of the replay harness's decision-hash equivalence."""
+    pytest.importorskip("nanoserve_core")
+    from server.kernels.paged_attention_triton import (restore_attention,
+                                                       use_triton_attention)
+    from server.paged_exec import PagedBatchState
+    from server.request import Request, SamplingParams
+
+    want = [naive_greedy(runner, p, N) for p in PROMPTS]
+    prev = use_triton_attention(runner.model)
+    try:
+        state = PagedBatchState(runner, num_blocks=512, block_size=16,
+                                fused=True, alloc_backend="cpp")
+        reqs = [Request(i, p, SamplingParams(max_tokens=N, temperature=0.0,
+                                             ignore_eos=True))
+                for i, p in enumerate(PROMPTS)]
+        state.add(reqs)
+        while state.any_active:
+            finished = state.step()
+            if finished:
+                state.evict(finished)
+    finally:
+        restore_attention(runner.model, prev)
+    got = [r.output_tokens for r in reqs]
+    for p, a, b in zip(PROMPTS, want, got):
+        assert a == b, f"cpp-alloc divergence on {p!r}:\n naive {a}\n cpp {b}"
+    assert state.alloc.num_free == 512
