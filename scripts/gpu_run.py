@@ -258,6 +258,8 @@ def main():
     if mode == "latency":
         print(">>> mode: latency (ITL tails, open-loop, 5 runs/engine)")
         LOG = "results/kernel_ci_log.txt"
+        step("phase-2 gate: python overhead share of a step", [
+            "bench.overhead_gate", "--device", "cuda"], tee=LOG)
         step("ITL tails: paged vs paged_fused", [
             "bench.latency_study", "--engines", "paged", "paged_fused",
             "--device", "cuda"], tee=LOG, timeout=1500)

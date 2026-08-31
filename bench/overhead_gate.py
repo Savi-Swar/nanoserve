@@ -33,11 +33,14 @@ def make_state(runner, kind, B, ctx_tokens):
     prompt_ids = runner.encode(
         "The quick brown fox jumps over the lazy dog and keeps running. " * 40
     )[:ctx_tokens]
-    reqs = [Request(i, "", SamplingParams(max_tokens=10_000, temperature=0.0,
+    # reservation must cover only the timed steps (paged reserves the whole
+    # prompt+max_new span up front; 10k here blew the pool at B=16 on the T4)
+    reqs = [Request(i, "", SamplingParams(max_tokens=128, temperature=0.0,
                                           ignore_eos=True),
                     prompt_ids=list(prompt_ids)) for i in range(B)]
-    if kind == "paged":
-        state = PagedBatchState(runner, num_blocks=8192, block_size=16)
+    if kind in ("paged", "paged_fused"):
+        state = PagedBatchState(runner, num_blocks=8192, block_size=16,
+                                fused=(kind == "paged_fused"))
     else:
         state = BatchState(runner)
     state.add(reqs)
@@ -64,7 +67,28 @@ def time_forward_only(runner, state, iters=30):
     from transformers import DynamicCache
     dev = runner.device
     B = state.size
-    if hasattr(state, "store"):    # paged: gather once, then time forward alone
+    if getattr(state, "fused", False):
+        # fused: same model call _step_fused makes, minus the bookkeeping.
+        # KV lands in the same pool slots every iteration (lens frozen), an
+        # idempotent overwrite that costs the same as the real write.
+        from server.kernels.paged_runtime import NanoPagedCache
+        bs = state.block_size
+        T = max(state.true_len)
+        tables_t = state._tables_t.clone()
+        lens_t = state._lens_t.clone()
+        blk = tables_t.gather(1, (lens_t // bs).unsqueeze(1)).squeeze(1)
+        slots = blk * bs + lens_t % bs
+        last = torch.tensor(state.last_tok, device=dev).unsqueeze(1)
+        pos = lens_t.unsqueeze(1)
+        cpos = torch.tensor([T], device=dev)
+
+        def one():
+            cache = NanoPagedCache(state.store, tables_t, lens_t, slots, bs,
+                                   max_len=T)
+            runner.model(input_ids=last, position_ids=pos,
+                         past_key_values=cache, use_cache=True,
+                         cache_position=cpos)
+    elif hasattr(state, "store"):  # paged: gather once, then time forward alone
         tables = [state.alloc.tables[state.sids[i]] for i in range(B)]
         T = max(state.true_len)
         keys, vals, mask = state.store.gather_batch(tables, state.true_len, T)
@@ -121,15 +145,24 @@ def main():
     m.warmup()
     rows = []
     print(f"{'state':>7} {'B':>3} {'step ms':>9} {'fwd ms':>9} {'overhead':>9}")
-    for kind in ("batched", "paged"):
-        for B in a.batches:
-            state = make_state(m, kind, B, a.ctx)
-            ms_step = time_step(m, state) * 1e3
-            ms_fwd = time_forward_only(m, state) * 1e3
-            share = max(0.0, 1 - ms_fwd / ms_step)
-            rows.append({"state": kind, "batch": B, "step_ms": ms_step,
-                         "forward_ms": ms_fwd, "overhead_share": share})
-            print(f"{kind:>7} {B:>3} {ms_step:>9.2f} {ms_fwd:>9.2f} {share:>8.1%}")
+    from server.kernels.paged_attention_triton import (restore_attention,
+                                                       use_triton_attention)
+    for kind in ("batched", "paged", "paged_fused"):
+        fused = kind == "paged_fused"
+        prev = use_triton_attention(m.model) if fused else None
+        try:
+            for B in a.batches:
+                state = make_state(m, kind, B, a.ctx)
+                ms_step = time_step(m, state) * 1e3
+                ms_fwd = time_forward_only(m, state) * 1e3
+                share = max(0.0, 1 - ms_fwd / ms_step)
+                rows.append({"state": kind, "batch": B, "step_ms": ms_step,
+                             "forward_ms": ms_fwd, "overhead_share": share})
+                print(f"{kind:>11} {B:>3} {ms_step:>9.2f} {ms_fwd:>9.2f} "
+                      f"{share:>8.1%}")
+        finally:
+            if fused:
+                restore_attention(m.model, prev)
 
     worst = max(r["overhead_share"] for r in rows)
     verdict = "C++ end-to-end p99 framing VIABLE" if worst >= 0.15 else (
