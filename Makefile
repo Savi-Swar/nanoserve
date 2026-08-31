@@ -104,6 +104,9 @@ cpp:
 sched-replay:
 	python -m bench.sched_replay
 
+contention:
+	c++ -O3 -std=c++17 -pthread cpp/bench_contention.cpp -o bench_contention
+
 latency:
 	python -m bench.latency_study --engines paged paged_fused --device $(DEVICE)
 
