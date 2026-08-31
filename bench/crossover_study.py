@@ -80,6 +80,10 @@ def time_batch(m: ModelRunner, prompt_ids: list[int], B: int, steps: int) -> dic
     ]
     batch = BatchState(m)
     batch.add(reqs)  # prefill; kernels/weights warm after this
+    # two untimed decode steps so kernel JIT/specialization (triton compiles a
+    # fresh variant per NUM_SPLITS constexpr) never lands inside the clock
+    batch.step()
+    batch.step()
 
     m.sync()
     t0 = time.perf_counter()
