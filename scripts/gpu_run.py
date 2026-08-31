@@ -81,7 +81,7 @@ def write_summary(ok):
             if e not in best or r["throughput"] > best[e]["throughput"]:
                 best[e] = r
         for e in ("naive", "static", "continuous", "continuous_fused",
-                  "paged", "paged_fused"):
+                  "paged", "paged_fused", "paged_fused_graph"):
             if e in best:
                 r = best[e]
                 lines.append(f"  {e:<17} {r['throughput']:8.1f} tok/s   "
@@ -89,7 +89,8 @@ def write_summary(ok):
                              f"(rate {r['rate']})")
         if "naive" in best and best["naive"]["throughput"] > 0:
             base = best["naive"]["throughput"]
-            for e in ("continuous", "continuous_fused", "paged", "paged_fused"):
+            for e in ("continuous", "continuous_fused", "paged", "paged_fused",
+                      "paged_fused_graph"):
                 if e in best:
                     lines.append(f"  {e} vs naive: {best[e]['throughput']/base:.1f}x")
         lines.append("")
@@ -326,9 +327,9 @@ def run_mode(mode):
     # open-loop queue backs up under load) can't blow up the wall clock.
     ok["sweep"] = step("engine x rate sweep (fp16)", [
         "bench.sweep", "--engines", "naive", "static", "continuous",
-        "continuous_fused", "paged", "paged_fused",
+        "continuous_fused", "paged", "paged_fused", "paged_fused_graph",
         "--rates", "4", "8", "16", "--n", "32", "--max-tokens", "48",
-        "--device", DEV], timeout=900)
+        "--device", DEV], timeout=1200)
     ok["plot"] = step("plots", ["bench.plot"])
 
     # 2. deterministic memory ablation (no model)
@@ -366,6 +367,11 @@ def run_mode(mode):
     ok["noise_kernel"] = step("noise-floor: paged vs paged_fused (5 runs)", [
         "bench.repeat", "--compare", "paged", "paged_fused", "--runs", "5",
         "--rate", "16", "--n", "48", "--device", DEV])
+
+    # 5c. does the cuda graph move the engine past the eager fused path?
+    ok["noise_graph"] = step("noise-floor: paged_fused vs paged_fused_graph (5 runs)", [
+        "bench.repeat", "--compare", "paged_fused", "paged_fused_graph",
+        "--runs", "5", "--rate", "16", "--n", "48", "--device", DEV])
 
     # 6. roofline crossover: does the predicted crossover batch match measurement?
     # (run BEFORE vLLM; vLLM's EngineCore lingers on GPU memory and would OOM this)

@@ -1,1 +1,1 @@
-cppstorm+graph
+full
