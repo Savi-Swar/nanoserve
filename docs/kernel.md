@@ -91,5 +91,30 @@ stack, and the attention kernel is now a small slice of it. The ladder says
 the same thing: op-level the kernel wins 5-8x, end-to-end the fused engines
 gain ~5-20% because attention was one slice of the step. The next factor is
 not a better attention kernel; it is removing per-step launch and dispatch
-overhead (CUDA graphs) and the scheduler's Python (the C++ hot path). Both
-are in flight.
+overhead (CUDA graphs) and the scheduler's Python (the C++ hot path).
+
+## CUDA graphs closed most of it
+
+Capturing the fused decode step in a CUDA graph (one graph per batch bucket,
+static buffers, replay per step) measured:
+
+| ctx | B | eager ms | graph ms | speedup |
+|-----|----|---------|----------|---------|
+| 128  | 1  | 34.0 | 9.4  | 3.6x |
+| 128  | 16 | 33.0 | 9.4  | 3.5x |
+| 1024 | 1  | 35.1 | 9.8  | 3.6x |
+| 1024 | 16 | 33.5 | 12.7 | 2.6x |
+
+The eager step really was about three quarters launch overhead. Serving
+through it, p50 inter-token latency falls 34.2 to 9.2 ms and p90 69.9 to 9.9.
+
+Three details made the capture correct rather than merely fast. The paged
+kernel bounds its loop with the per-row length loaded from a device tensor,
+so a recorded graph tracks sequence growth with no re-capture. Split-K is
+pinned to 1 during capture, because the split variant sizes its chunks from
+a host value a recording would fossilize at the capture-time length. And
+transformers' mask builder allocates a device scalar mid-forward, which CUDA
+forbids during capture; the fused decode never reads that mask (the kernel
+masks by length), so the mask interface returns None while capturing.
+Equivalence held: the graphed engine is token-identical to the eager fused
+engine, mid-stream admissions included.
