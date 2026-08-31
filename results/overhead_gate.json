@@ -3,67 +3,67 @@
     {
       "state": "batched",
       "batch": 1,
-      "step_ms": 36.853032166667774,
-      "forward_ms": 37.538680066666075,
+      "step_ms": 34.22915573333587,
+      "forward_ms": 35.03423236666473,
       "overhead_share": 0.0
     },
     {
       "state": "batched",
       "batch": 8,
-      "step_ms": 37.24819246666584,
-      "forward_ms": 35.96333573333368,
-      "overhead_share": 0.03449447203329414
+      "step_ms": 37.06475660000024,
+      "forward_ms": 35.177384866669094,
+      "overhead_share": 0.05092092614284516
     },
     {
       "state": "batched",
       "batch": 16,
-      "step_ms": 36.71580586666702,
-      "forward_ms": 36.92212006666674,
+      "step_ms": 32.850907366666135,
+      "forward_ms": 32.94969476666741,
       "overhead_share": 0.0
     },
     {
       "state": "paged",
       "batch": 1,
-      "step_ms": 40.482236133332584,
-      "forward_ms": 35.317597333333126,
-      "overhead_share": 0.12757790313235584
+      "step_ms": 37.28940036666775,
+      "forward_ms": 32.87606609999708,
+      "overhead_share": 0.11835358636165305
     },
     {
       "state": "paged",
       "batch": 8,
-      "step_ms": 41.907620000000634,
-      "forward_ms": 37.938754733333255,
-      "overhead_share": 0.09470509818184181
+      "step_ms": 37.77823406666888,
+      "forward_ms": 32.61096706666724,
+      "overhead_share": 0.13677894501057775
     },
     {
       "state": "paged",
       "batch": 16,
-      "step_ms": 43.95342233333395,
-      "forward_ms": 36.991239799999676,
-      "overhead_share": 0.15839909985926637
+      "step_ms": 40.707465033335666,
+      "forward_ms": 33.44572283333491,
+      "overhead_share": 0.17838846496715177
     },
     {
       "state": "paged_fused",
       "batch": 1,
-      "step_ms": 34.56957520000022,
-      "forward_ms": 34.51139986666665,
-      "overhead_share": 0.0016828477930955765
+      "step_ms": 31.368717100000747,
+      "forward_ms": 29.5608599999999,
+      "overhead_share": 0.05763248443465374
     },
     {
       "state": "paged_fused",
       "batch": 8,
-      "step_ms": 33.69286509999938,
-      "forward_ms": 32.93012536666614,
-      "overhead_share": 0.022638019386877706
+      "step_ms": 29.447282533332476,
+      "forward_ms": 29.54032909999948,
+      "overhead_share": 0.0
     },
     {
       "state": "paged_fused",
       "batch": 16,
-      "step_ms": 34.441381233333836,
-      "forward_ms": 33.32277123333256,
-      "overhead_share": 0.03247866258391041
+      "step_ms": 29.70693106666431,
+      "forward_ms": 29.17863346666536,
+      "overhead_share": 0.017783647823244153
     }
   ],
-  "max_overhead_share": 0.15839909985926637,
+  "max_overhead_share": 0.17838846496715177,
   "verdict": "C++ end-to-end p99 framing VIABLE"
 }
