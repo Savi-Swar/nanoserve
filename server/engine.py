@@ -289,7 +289,8 @@ class PagedContinuousEngine(Engine):
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
                  max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
-                 fused: bool = False, alloc_backend: str = "py"):
+                 fused: bool = False, alloc_backend: str = "py",
+                 graphs: bool = False):
         super().__init__(model, on_finish, on_token, on_event)
         from .paged_exec import PagedBatchState
         self.max_batch = max_batch
@@ -303,7 +304,9 @@ class PagedContinuousEngine(Engine):
             warm_decode_kernels(model.model, block_size=block_size)
         self.state = PagedBatchState(model, num_blocks=num_blocks,
                                      block_size=block_size, fused=fused,
-                                     alloc_backend=alloc_backend)
+                                     alloc_backend=alloc_backend, graphs=graphs,
+                                     graph_buckets=[b for b in (1, 2, 4, 8, 16)
+                                                    if b <= max_batch])
 
     def _run(self):
         stop = False
@@ -398,17 +401,31 @@ class FusedPagedEngine(PagedContinuousEngine):
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
                  max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
-                 alloc_backend: str = "py"):
+                 alloc_backend: str = "py", graphs: bool = False):
         super().__init__(model, on_finish, on_token, on_event,
                          max_batch=max_batch, num_blocks=num_blocks,
                          block_size=block_size, fused=True,
-                         alloc_backend=alloc_backend)
+                         alloc_backend=alloc_backend, graphs=graphs)
         self._attn_model = model.model
 
     def stop(self):
         super().stop()
         from .kernels.paged_attention_triton import restore_attention
         restore_attention(self._attn_model, self._prev_attn_impl)
+
+
+class GraphPagedEngine(FusedPagedEngine):
+    """The fused engine with the decode step captured in CUDA graphs, one
+    per batch bucket. Falls back to the plain fused step off-bucket. CUDA
+    only; on CPU it quietly behaves like paged_fused."""
+
+    name = "paged_fused_graph"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event,
+                         max_batch=max_batch, num_blocks=num_blocks,
+                         block_size=block_size, graphs=True)
 
 
 class CppPagedEngine(FusedPagedEngine):
@@ -456,5 +473,6 @@ ENGINES = {
     FusedPagedEngine.name: FusedPagedEngine,
     ContinuousFusedEngine.name: ContinuousFusedEngine,
     CppPagedEngine.name: CppPagedEngine,
+    GraphPagedEngine.name: GraphPagedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)

@@ -140,13 +140,31 @@ class PagedBatchState:
     any_active / reqs), but KV lives in the paged store."""
 
     def __init__(self, model: ModelRunner, num_blocks: int = 4096, block_size: int = 16,
-                 fused: bool = False, alloc_backend: str = "py"):
+                 fused: bool = False, alloc_backend: str = "py",
+                 graphs: bool = False, graph_buckets=(1, 2, 4, 8, 16),
+                 graph_max_ctx: int = 4096):
         self.m = model
         self.store = PagedKVStore(model, num_blocks, block_size)
         if alloc_backend == "cpp":
             self.alloc = CppAllocator(num_blocks, block_size)
         else:
             self.alloc = BlockAllocator(num_blocks, block_size)
+        # CUDA-graph decode: capture one graph per batch bucket at init, then
+        # each step is a buffer copy plus one replay. Requires the fused path
+        # and a CUDA device; silently stays un-graphed otherwise.
+        self._graphed = None
+        if graphs and fused and str(model.device).startswith("cuda"):
+            from .kernels.graph_step import GraphedDecode
+            self.alloc.add_seq(-7, 1)      # scratch block for pad rows
+            scratch = self.alloc.tables[-7][0]
+            for li in range(self.store.n_layers):
+                self.store._flat(self.store.key[li])[
+                    scratch * block_size:(scratch + 1) * block_size] = 0
+                self.store._flat(self.store.val[li])[
+                    scratch * block_size:(scratch + 1) * block_size] = 0
+            cap = min(graph_max_ctx // block_size + 1, num_blocks)
+            self._graphed = GraphedDecode(model.model, self.store, block_size,
+                                          list(graph_buckets), cap, scratch)
         self.block_size = block_size
         # fused: decode attention reads the pool directly (Triton kernel on
         # CUDA, gather fallback elsewhere) instead of materializing a
@@ -263,6 +281,16 @@ class PagedBatchState:
         if self._tables_t is None:
             self._rebuild_fused()
         tables_t, lens_t = self._tables_t, self._lens_t
+
+        g = self._graphed
+        if (g is not None and g.bucket_for(B) is not None
+                and tables_t.shape[1] <= g.cap and T_max + 1 < g.cap * bs):
+            last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
+            logits = g.step(B, last, lens_t.unsqueeze(1), tables_t, lens_t)
+            lens_t += 1
+            for i in range(B):
+                self.true_len[i] += 1
+            return self._finish_step(logits[:, -1, :])
 
         # each row's write slot for this step's token, no per-row python
         blk = tables_t.gather(1, (lens_t // bs).unsqueeze(1)).squeeze(1)

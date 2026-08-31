@@ -37,6 +37,11 @@ except ImportError:  # macOS dev box: no triton wheels. GPU boxes get it via tor
 # test can assert it wasn't silently falling back to SDPA the whole time
 KERNEL_CALLS = 0
 
+# when set, overrides the split policy in both launchers. CUDA-graph capture
+# pins this to 1: the split variant sizes chunks from a host value at launch
+# time, which a graph recording would fossilize at the capture-time length.
+FORCE_NUM_SPLITS: int | None = None
+
 _NEG_INF = float("-inf")
 
 
@@ -129,7 +134,10 @@ def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     else:
         m, smb, smt = q, 0, 0  # dummy pointer, never read
 
-    S = num_splits if num_splits is not None else _auto_splits(B, H, T, block_l)
+    if FORCE_NUM_SPLITS is not None:
+        S = FORCE_NUM_SPLITS
+    else:
+        S = num_splits if num_splits is not None else _auto_splits(B, H, T, block_l)
     if S > 1:
         BD = triton.next_power_of_2(D)
         m_part = torch.empty(B * H * S, device=q.device, dtype=torch.float32)
@@ -259,7 +267,9 @@ def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.
         lens = lens.to(torch.int32)
     out = torch.empty_like(q)
 
-    if num_splits is not None:
+    if FORCE_NUM_SPLITS is not None:
+        S = FORCE_NUM_SPLITS
+    elif num_splits is not None:
         S = num_splits
     else:
         # per-seq lengths vary; size the split policy on the longest

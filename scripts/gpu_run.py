@@ -255,6 +255,21 @@ def main():
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "graph":
+        print(">>> mode: graph (CUDA-graph decode: correctness, step time, tails)")
+        LOG = "results/kernel_ci_log.txt"
+        step("graph equivalence tests",
+             ["pytest", "tests/test_graph_step.py", "-q"], tee=LOG)
+        step("graph step-time bench", ["bench.graph_bench", "--device", "cuda"],
+             tee=LOG, timeout=1500)
+        step("ITL tails: paged_fused vs paged_fused_graph", [
+            "bench.latency_study", "--engines", "paged_fused",
+            "paged_fused_graph", "--device", "cuda",
+            "--out", "results/latency_graph.json"], tee=LOG, timeout=1500)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("graph-mode run\n")
+        return
     if mode == "storm":
         print(">>> mode: storm (cancellation storms, survivor tails, invariants)")
         LOG = "results/kernel_ci_log.txt"
