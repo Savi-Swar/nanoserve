@@ -227,6 +227,13 @@ def main():
               "scripts/gpu_run_mode.txt to 'full' for the whole pipeline)")
         kernel_run()
         return
+    if mode == "tune":
+        print(">>> mode: tune (kernel launch-parameter sweep)")
+        step("kernel tuner", ["bench.kernel_tune"], tee="results/kernel_ci_log.txt")
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("tune-mode run\n")
+        return
 
     ok = {}
     # 1. throughput ladder (fp16). Small n + few rates so naive (serial, and the
