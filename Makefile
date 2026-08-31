@@ -98,7 +98,7 @@ scale-predict:
 
 cpp:
 	c++ -O3 -std=c++17 -shared -fPIC $$(python3 -m pybind11 --includes) \
-	  cpp/binding.cpp -o nanoserve_core$$(python3-config --extension-suffix) \
+	  cpp/binding.cpp -o nanoserve_core$$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))') \
 	  $$(if [ "$$(uname)" = "Darwin" ]; then echo "-undefined dynamic_lookup"; fi)
 
 sched-replay:

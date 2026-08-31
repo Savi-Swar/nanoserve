@@ -259,6 +259,19 @@ def run_mode(mode):
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "cppstorm":
+        # just the c++-engine storm leg (the full sweep already ran)
+        print(">>> mode: cppstorm (build extension, storm the c++ engine)")
+        LOG = "results/kernel_ci_log.txt"
+        os.system(f"{PY} -m pip install -q pybind11 && make cpp")
+        step("storms: paged_fused_cpp", [
+            "bench.storm_study", "--engine", "paged_fused_cpp",
+            "--device", "cuda", "--seeds", "0",
+            "--out", "results/storm_cpp.json"], tee=LOG, timeout=900)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("cppstorm-mode run\n")
+        return
     if mode == "graph":
         print(">>> mode: graph (CUDA-graph decode: correctness, step time, tails)")
         LOG = "results/kernel_ci_log.txt"

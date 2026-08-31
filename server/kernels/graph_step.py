@@ -60,11 +60,42 @@ class GraphedDecode:
 
         prev_force = pat.FORCE_NUM_SPLITS
         pat.FORCE_NUM_SPLITS = 1
+        prev_mask = self._register_no_mask()
         try:
             for Bp in self.buckets:
                 self._capture(Bp)
         finally:
             pat.FORCE_NUM_SPLITS = prev_force
+            self._register_mask(prev_mask)
+
+    @staticmethod
+    def _register_no_mask():
+        """The transformers mask builder allocates a device scalar with
+        torch.tensor(0.0, device=...), a host-to-device copy that CUDA
+        forbids mid-capture. The fused decode ignores the mask anyway (the
+        kernel bounds itself by each row's length), so during capture the
+        mask interface for our attention name returns None. Restored after,
+        because the prefill fallback path does use masks."""
+        try:
+            from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
+        except ImportError:
+            return None
+        prev = ALL_MASK_ATTENTION_FUNCTIONS[pat.ATTN_NAME]
+        GraphedDecode._register_mask(lambda *a, **k: None)
+        return prev
+
+    @staticmethod
+    def _register_mask(fn):
+        if fn is None:
+            return
+        from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
+        try:
+            ALL_MASK_ATTENTION_FUNCTIONS.register(pat.ATTN_NAME, fn)
+        except Exception:
+            try:
+                ALL_MASK_ATTENTION_FUNCTIONS[pat.ATTN_NAME] = fn
+            except Exception:
+                ALL_MASK_ATTENTION_FUNCTIONS._global_mapping[pat.ATTN_NAME] = fn
 
     def _forward(self, Bp: int):
         # slot arithmetic is recorded too, so replays recompute it from the
