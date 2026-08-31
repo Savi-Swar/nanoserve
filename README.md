@@ -13,18 +13,28 @@ which published inference optimizations actually help on realistic workloads.
 
 | engine | throughput | vs naive | p99 TTFT |
 |---|---|---|---|
-| naive | 29.1 tok/s | 1x | 52 s |
-| static batching | 142.9 tok/s | 4.9x | 7.7 s |
-| continuous batching | 278.5 tok/s | 9.6x | 2.0 s |
-| paged KV cache | 237.2 tok/s | 8.1x | 2.6 s |
+| naive | 27.4 tok/s | 1x | 56 s |
+| static batching | 140.4 tok/s | 5.1x | 7.8 s |
+| continuous batching | 272.6 tok/s | 9.9x | 2.1 s |
+| paged KV (gather + SDPA) | 228.3 tok/s | 8.3x | 2.9 s |
+| paged KV + triton kernel | 274.5 tok/s | 10.0x | 2.1 s |
+| **continuous + triton kernel** | **286.7 tok/s** | **10.5x** | **1.9 s** |
 
-Continuous batching is 9.6x naive throughput and reaches 16% of vLLM (1,708
-tok/s) with masked SDPA and no fused kernels. Measured as goodput (requests/sec
-meeting a 500 ms TTFT / 50 ms TPOT SLO) it sustains roughly 200x naive, which
-meets that SLO on almost no requests once its queue backs up.
+The decode attention is a hand-written Triton kernel (online softmax, native
+GQA, block-table indexing over the paged pool, split-K flash-decoding): 5-8x
+over the PyTorch SDPA path at op level, and it moves the measured decode-
+scaling knee from B~4 out beyond the testable range (162 -> 495 tok/s at
+B=16, S=2048). Details and the two instructive failures in
+[docs/kernel.md](docs/kernel.md). Best engine reaches 17% of vLLM (1,708
+tok/s). Measured as goodput (req/s meeting a 500 ms TTFT / 50 ms TPOT SLO)
+continuous sustains roughly 200x naive.
 
 ## What it found
 
+- The paged cache's throughput penalty was the attention path, not paging.
+  Gather-paged runs 16-19% behind continuous; with the kernel reading the pool
+  through the block table directly, paged matches continuous while keeping the
+  68%->4% fragmentation win.
 - Speculative decoding is a net loss under batching on generic traffic. I built
   speculation inside the continuous batch (token-exact) and measured it drop from
   0.97x to 0.40x as the batch grows on generic prose, while staying a 2-5x win on
