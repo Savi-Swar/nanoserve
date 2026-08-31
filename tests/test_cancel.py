@@ -25,3 +25,38 @@ def test_engine_reclaims_blocks_on_cancel():
                      max_tokens=10, device="cpu")
     assert r["killed_midstream"] > 0
     assert r["leaked_cycles"] == 0
+
+
+@pytest.mark.skipif(os.environ.get("RUN_SLOW") != "1",
+                    reason="set RUN_SLOW=1 (loads the model)")
+def test_impossible_request_rejected_not_wedged():
+    """A request whose reservation exceeds the whole pool must be rejected at
+    admission, and requests behind it must still be served. Before the fix
+    the empty-batch force-admit raised OutOfBlocks inside the engine thread
+    and every queued request hung forever (the vLLM #39734 failure class)."""
+    import time
+
+    from server.engine import ENGINES
+    from server.model import ModelRunner
+    from server.request import Request, SamplingParams
+
+    m = ModelRunner("Qwen/Qwen2.5-0.5B", device="cpu")
+    done = []
+    eng = ENGINES["paged"](m, on_finish=lambda r: done.append(r.id),
+                           max_batch=4, num_blocks=32, block_size=16)
+    eng.start()
+    poison = Request(0, "hello", SamplingParams(max_tokens=2000,
+                                                temperature=0.0,
+                                                ignore_eos=True))
+    normal = Request(1, "hi", SamplingParams(max_tokens=5, temperature=0.0,
+                                             ignore_eos=True))
+    eng.submit(poison)
+    eng.submit(normal)
+    t0 = time.time()
+    while len(done) < 2 and time.time() - t0 < 120:
+        time.sleep(0.2)
+    eng.stop()
+    assert poison.status == "rejected"
+    assert normal.status == "done"
+    assert len(normal.output_tokens) == 5
+    assert eng.state.alloc.num_free == 32

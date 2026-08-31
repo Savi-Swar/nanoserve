@@ -330,6 +330,18 @@ class PagedContinuousEngine(Engine):
             for req in pending:
                 room = self.state.size < self.max_batch
                 fits = self.state.can_admit(req)
+                if not fits and self.state.size == 0 and not still:
+                    # the batch is empty, so the pool is fully free, and the
+                    # request still does not fit: its reservation exceeds the
+                    # whole pool and it can never run. Reject it now. The old
+                    # behavior force-admitted it "to guarantee progress",
+                    # which raised OutOfBlocks inside the engine thread and
+                    # wedged every request queued behind it.
+                    req.status = "rejected"
+                    req.finish_time = time.perf_counter()
+                    self._emit("rejected", req)
+                    self.on_finish(req)
+                    continue
                 force = self.state.size == 0 and not still  # guarantee progress
                 if room and (fits or force):
                     req.schedule_time = time.perf_counter()
