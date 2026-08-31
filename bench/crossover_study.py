@@ -148,6 +148,8 @@ def main():
     p.add_argument("--mem-bandwidth-gbps", type=float, default=320.0,
                    help="HBM read bandwidth for the roofline prediction "
                         "(default 320 ~= NVIDIA T4).")
+    p.add_argument("--attn", choices=["sdpa", "triton"], default="sdpa",
+                   help="decode attention path to measure")
     p.add_argument("--out", default="results/crossover.json")
     a = p.parse_args()
 
@@ -158,6 +160,10 @@ def main():
     print(f"loading model...")
     m = ModelRunner(a.model, device=a.device)
     m.warmup()
+    if a.attn == "triton":
+        from server.kernels.paged_attention_triton import use_triton_attention
+        use_triton_attention(m.model)
+        print("decode attention: nanoserve triton kernel")
 
     on_cpu = m.device == "cpu"
     if on_cpu:
@@ -230,6 +236,7 @@ def main():
     out = {
         "model": a.model,
         "device": m.device,
+        "attn": a.attn,
         "dtype_bytes": dtype_bytes,
         "seq_len": S,
         "steps": a.steps,

@@ -80,15 +80,16 @@ def write_summary(ok):
             e = r["engine"]
             if e not in best or r["throughput"] > best[e]["throughput"]:
                 best[e] = r
-        for e in ("naive", "static", "continuous", "paged"):
+        for e in ("naive", "static", "continuous", "continuous_fused",
+                  "paged", "paged_fused"):
             if e in best:
                 r = best[e]
-                lines.append(f"  {e:<12} {r['throughput']:8.1f} tok/s   "
+                lines.append(f"  {e:<17} {r['throughput']:8.1f} tok/s   "
                              f"TTFT p99 {r['ttft']['p99']*1e3:8.0f} ms   "
                              f"(rate {r['rate']})")
         if "naive" in best and best["naive"]["throughput"] > 0:
             base = best["naive"]["throughput"]
-            for e in ("continuous", "paged"):
+            for e in ("continuous", "continuous_fused", "paged", "paged_fused"):
                 if e in best:
                     lines.append(f"  {e} vs naive: {best[e]['throughput']/base:.1f}x")
         lines.append("")
@@ -131,6 +132,24 @@ def write_summary(ok):
         lines.append(f"roofline crossover (S={cx.get('seq_len')}): predicted B*="
                      f"{cx.get('predicted_crossover_batch', 0):.0f}, measured ~= "
                      f"{cx.get('measured_crossover_batch')}{tag}")
+        cxt = _load("results/crossover_triton.json")
+        if cxt:
+            lines.append(f"  with triton decode kernel: measured ~= "
+                         f"{cxt.get('measured_crossover_batch')}")
+            rows_s = {r['batch']: r['decode_tok_s'] for r in cx.get('sweep', [])}
+            rows_t = {r['batch']: r['decode_tok_s'] for r in cxt.get('sweep', [])}
+            common = sorted(set(rows_s) & set(rows_t))
+            if common:
+                lines.append("  decode tok/s sdpa->triton: " + "  ".join(
+                    f"B{b}:{rows_s[b]:.0f}->{rows_t[b]:.0f}" for b in common))
+        lines.append("")
+
+    kb = _load("results/kernel_bench.json")
+    if kb and kb.get("rows"):
+        cells = "  ".join(
+            f"B{r['batch']}:{r.get('split_speedup', r['speedup']):.1f}x"
+            for r in kb["rows"])
+        lines.append(f"decode kernel vs sdpa (T={kb.get('seq_len')}): {cells}")
         lines.append("")
 
     sb = _load("results/spec_batched.json")
@@ -239,9 +258,10 @@ def main():
     # 1. throughput ladder (fp16). Small n + few rates so naive (serial, and the
     # open-loop queue backs up under load) can't blow up the wall clock.
     ok["sweep"] = step("engine x rate sweep (fp16)", [
-        "bench.sweep", "--engines", "naive", "static", "continuous", "paged",
+        "bench.sweep", "--engines", "naive", "static", "continuous",
+        "continuous_fused", "paged", "paged_fused",
         "--rates", "4", "8", "16", "--n", "32", "--max-tokens", "48",
-        "--device", DEV])
+        "--device", DEV], timeout=900)
     ok["plot"] = step("plots", ["bench.plot"])
 
     # 2. deterministic memory ablation (no model)
@@ -275,12 +295,27 @@ def main():
         "bench.repeat", "--compare", "continuous", "paged", "--runs", "5",
         "--rate", "16", "--n", "48", "--device", DEV])
 
+    # 5b. does the kernel move the engine? same noise-floor discipline
+    ok["noise_kernel"] = step("noise-floor: paged vs paged_fused (5 runs)", [
+        "bench.repeat", "--compare", "paged", "paged_fused", "--runs", "5",
+        "--rate", "16", "--n", "48", "--device", DEV])
+
     # 6. roofline crossover: does the predicted crossover batch match measurement?
     # (run BEFORE vLLM; vLLM's EngineCore lingers on GPU memory and would OOM this)
     ok["crossover"] = step("roofline crossover (predicted vs measured batch)", [
         "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
         "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320"],
         timeout=600)
+
+    # 6b. same crossover through the triton kernel: does the knee move right?
+    ok["crossover_triton"] = step("crossover with the triton decode kernel", [
+        "bench.crossover_study", "--device", DEV, "--batches", "1", "4", "8", "16",
+        "32", "64", "--seq-len", "2048", "--steps", "12", "--mem-bandwidth-gbps", "320",
+        "--attn", "triton", "--out", "results/crossover_triton.json"],
+        timeout=600)
+
+    # 6c. op-level kernel table for the writeup
+    ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"])
 
     # 7. roofline overlay (analytical; T4 presets; override for your GPU)
     ok["roofline"] = step("roofline: predicted vs measured", [

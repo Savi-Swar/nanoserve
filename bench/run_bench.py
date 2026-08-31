@@ -60,7 +60,7 @@ def run(args, model: ModelRunner | None = None):
     cfg = {}
     if args.engine == "static":
         cfg = dict(batch_size=args.batch_size, max_wait=args.max_wait)
-    elif args.engine == "continuous":
+    elif args.engine in ("continuous", "continuous_fused"):
         cfg = dict(max_batch=args.max_batch)
     elif args.engine in ("paged", "paged_fused"):
         cfg = dict(max_batch=args.max_batch, num_blocks=getattr(args, "num_blocks", 4096))

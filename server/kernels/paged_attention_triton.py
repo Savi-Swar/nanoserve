@@ -107,7 +107,7 @@ if HAS_TRITON:
 def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                      mask_add: torch.Tensor | None = None,
                      scale: float | None = None,
-                     block_l: int = 128, num_warps: int = 4,
+                     block_l: int = 256, num_warps: int = 4,
                      num_splits: int | None = None) -> torch.Tensor:
     """Fused decode attention over contiguous KV.
 
@@ -235,7 +235,7 @@ if HAS_TRITON:
 def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor,
                            block_tables: torch.Tensor, lens: torch.Tensor,
                            block_size: int, scale: float | None = None,
-                           block_l: int = 128, num_warps: int = 4,
+                           block_l: int = 256, num_warps: int = 4,
                            num_splits: int | None = None,
                            max_len: int | None = None) -> torch.Tensor:
     """Fused decode attention straight over the paged pool (no gather).
@@ -480,14 +480,15 @@ def _merge_on_device(m_part, l_part, acc_part, out, B, H, D, S, BD):
 
 
 def _auto_splits(B: int, H: int, T: int, block_l: int) -> int:
-    """More programs until the GPU has work: target ~128 concurrent programs
-    (a few waves on a 40-SM T4). Never split below one tile per chunk."""
+    """Split policy fit to the T4 tuning sweep (results/kernel_tune.json):
+    splits only pay at long context with few programs, and modest counts beat
+    aggressive ones (the merge and the partial writes are not free)."""
     progs = B * H
-    if progs >= 128 or T <= 2 * block_l:
+    if T <= 512 or progs >= 128:
         return 1
-    by_occupancy = max(1, 128 // progs)
+    by_occupancy = max(2, min(8, 256 // progs))
     by_length = max(1, (T + block_l - 1) // block_l)
-    return int(min(by_occupancy, by_length, 32))
+    return int(min(by_occupancy, by_length))
 
 
 def _merge_partials(m_part, l_part, acc_part, B, H, D, dtype):

@@ -297,7 +297,7 @@ class PagedContinuousEngine(Engine):
             # decode attention reads the paged pool directly (Triton kernel on
             # CUDA); switches the model's attention implementation over
             from .kernels.paged_attention_triton import use_triton_attention
-            use_triton_attention(model.model)
+            self._prev_attn_impl = use_triton_attention(model.model)
         self.state = PagedBatchState(model, num_blocks=num_blocks,
                                      block_size=block_size, fused=fused)
 
@@ -372,7 +372,11 @@ class PagedContinuousEngine(Engine):
 class FusedPagedEngine(PagedContinuousEngine):
     """Paged engine with the no-gather decode path: Triton kernel over the
     pool on CUDA, gather fallback elsewhere. Separate name so benchmarks can
-    compare it against the gather-based paged engine directly."""
+    compare it against the gather-based paged engine directly.
+
+    Switching the attention implementation mutates the shared model, so stop()
+    restores the previous implementation; otherwise every engine constructed
+    after this one in the same process would silently run the kernel too."""
 
     name = "paged_fused"
 
@@ -381,6 +385,32 @@ class FusedPagedEngine(PagedContinuousEngine):
         super().__init__(model, on_finish, on_token, on_event,
                          max_batch=max_batch, num_blocks=num_blocks,
                          block_size=block_size, fused=True)
+        self._attn_model = model.model
+
+    def stop(self):
+        super().stop()
+        from .kernels.paged_attention_triton import restore_attention
+        restore_attention(self._attn_model, self._prev_attn_impl)
+
+
+class ContinuousFusedEngine(ContinuousBatchEngine):
+    """Continuous engine with decode attention through the Triton kernel
+    (contiguous cache; the kernel replaces repeat_kv + SDPA for q_len == 1).
+    Restores the model's attention implementation on stop()."""
+
+    name = "continuous_fused"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16):
+        super().__init__(model, on_finish, on_token, on_event, max_batch=max_batch)
+        from .kernels.paged_attention_triton import use_triton_attention
+        self._attn_model = model.model
+        self._prev_attn = use_triton_attention(model.model)
+
+    def stop(self):
+        super().stop()
+        from .kernels.paged_attention_triton import restore_attention
+        restore_attention(self._attn_model, self._prev_attn)
 
 
 ENGINES = {
@@ -389,5 +419,6 @@ ENGINES = {
     ContinuousBatchEngine.name: ContinuousBatchEngine,
     PagedContinuousEngine.name: PagedContinuousEngine,
     FusedPagedEngine.name: FusedPagedEngine,
+    ContinuousFusedEngine.name: ContinuousFusedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)
