@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench cpp sched-replay latency audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench cpp sched-replay latency storm audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -106,6 +106,9 @@ sched-replay:
 
 contention:
 	c++ -O3 -std=c++17 -pthread cpp/bench_contention.cpp -o bench_contention
+
+storm:
+	python -m bench.storm_study --device $(DEVICE)
 
 latency:
 	python -m bench.latency_study --engines paged paged_fused --device $(DEVICE)

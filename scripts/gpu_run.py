@@ -255,6 +255,23 @@ def main():
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "storm":
+        print(">>> mode: storm (cancellation storms, survivor tails, invariants)")
+        LOG = "results/kernel_ci_log.txt"
+        step("storms: paged_fused", [
+            "bench.storm_study", "--engine", "paged_fused",
+            "--device", "cuda"], tee=LOG, timeout=1800)
+        # the c++-backed engine under the same storms (1 seed: integration
+        # proof, not a tail study). Extension built here; failure just skips.
+        os.system(f"{PY} -m pip install -q pybind11 && make cpp")
+        step("storms: paged_fused_cpp", [
+            "bench.storm_study", "--engine", "paged_fused_cpp",
+            "--device", "cuda", "--seeds", "0",
+            "--out", "results/storm_cpp.json"], tee=LOG, timeout=900)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("storm-mode run\n")
+        return
     if mode == "latency":
         print(">>> mode: latency (ITL tails, open-loop, 5 runs/engine)")
         LOG = "results/kernel_ci_log.txt"
