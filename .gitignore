@@ -27,3 +27,4 @@ data/*.csv
 
 # keep the committed perf baseline
 !results/baseline.json
+nanoserve_core*.so

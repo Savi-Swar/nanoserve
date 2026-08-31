@@ -221,6 +221,8 @@ def kernel_run():
                              ["pytest", "tests/test_fused_paged.py", "-q", "--tb=short"],
                              env={"RUN_SLOW": "1"}, tee=LOG)
     ok["kernel_bench"] = step("kernel microbench", ["bench.kernel_bench"], tee=LOG)
+    ok["overhead_gate"] = step("phase-2 gate: python overhead share of a step",
+                               ["bench.overhead_gate", "--device", "cuda"], tee=LOG)
     # end-to-end: the same open-loop workload through gather-paged vs fused-paged
     ok["e2e"] = step("engine sweep: paged vs paged_fused", [
         "bench.sweep", "--engines", "paged", "paged_fused",

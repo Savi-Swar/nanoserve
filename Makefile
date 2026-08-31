@@ -7,7 +7,7 @@
 
 DEVICE ?= cpu
 
-.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench audit all clean
+.PHONY: help install test test-all bench plot memory trace roofline crossover scale scale-predict spec spec-batched prefix kvquant goodput noise cancel-chaos kernel-test kernel-bench cpp audit all clean
 
 help:
 	@echo "nanoserve targets:"
@@ -95,6 +95,11 @@ kernel-bench:
 
 scale-predict:
 	python -m bench.scale_predict
+
+cpp:
+	c++ -O3 -std=c++17 -shared -fPIC $$(python3 -m pybind11 --includes) \
+	  cpp/binding.cpp -o nanoserve_core$$(python3-config --extension-suffix) \
+	  $$(if [ "$$(uname)" = "Darwin" ]; then echo "-undefined dynamic_lookup"; fi)
 
 all: memory bench plot
 
