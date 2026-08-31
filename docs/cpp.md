@@ -148,6 +148,38 @@ benchmarking literature keeps having to re-teach:
 - Noise gets a vote. Each engine runs 5 times; two engines are called
   different at p99 only if their per-run p99 ranges do not overlap.
 
+## Storms
+
+The abort path is the least-tested path in every inference server; vLLM and
+SGLang both shipped bugs where disconnected clients kept decoding or leaked
+their memory, and no published benchmark injects client disconnects
+open-loop and measures what they do to the requests that stay. So that is
+what `bench/storm_study.py` does: seeded storms against the live engine,
+survivor inter-token tails split by phase, and hard accounting at quiesce.
+
+T4, rate 8 req/s, 150 requests, 30% chaff, three seeds per scenario:
+
+- Baseline survivor p99: 98-99 ms.
+- Disconnect storm (each chaff request cancelled after reading 1-32 tokens):
+  survivor p99 during the storm 97-102 ms. Indistinguishable from baseline.
+  Mid-stream eviction and block reclaim cost the batch nothing measurable.
+- Swizzle (chaff cancelled one by one in random order): flat, 96-98 ms.
+- Burst (all 45 chaff aborted in one instant): the one real signature.
+  During-window survivor p99 hit 160 ms in one of three seeds (94-96 in the
+  others) - a single step that evicts 45 rows and compacts the batch is
+  visibly not free, roughly a p99 doubling for the requests unlucky enough
+  to share it.
+- Invariants: 12 of 12 runs clean. Every block back in the pool, every
+  request terminal, every survivor got its full token budget.
+
+Writing the harness found a wedge before it ever ran: the head-of-line
+poison scenario (a request whose reservation exceeds the whole pool)
+force-admitted into an allocator exception that killed the engine thread
+and starved everything behind it - the same failure class as vLLM issue
+39734. Rejected at admission now, with a regression test.
+
+## Measuring the fused engines' tails
+
 First results from the T4 (rate 8 req/s, 250 requests, 96 tokens, 5 runs,
 117k pooled ITLs per engine):
 

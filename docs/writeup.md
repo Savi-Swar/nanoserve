@@ -513,11 +513,15 @@ What the C++ pillar actually established, each with its own instrument:
 - Storms as a test subject. A seeded harness cancels requests mid-stream
   (gradual, burst, and one-by-one in random order) and reports what the
   storm does to the survivors' tails, then asserts the accounting: every
-  block back, every request terminal. Writing it found a wedge: a request
-  whose reservation exceeds the whole pool was force-admitted into an
-  allocator exception that killed the engine thread and starved the queue
-  behind it (the same failure class as vLLM issue 39734). It is now
-  rejected at admission.
+  block back, every request terminal. Measured on the T4: a 30% disconnect
+  storm leaves survivor p99 at baseline (mid-stream eviction is free), but
+  burst-aborting 45 requests at once lifted the during-window survivor p99
+  from ~98 to 160 ms in one of three seeds - the one storm with a
+  signature. 12 of 12 runs passed every invariant. Writing the harness also
+  found a wedge before it ran: a request whose reservation exceeds the
+  whole pool was force-admitted into an allocator exception that killed the
+  engine thread and starved the queue behind it (the same failure class as
+  vLLM issue 39734). It is now rejected at admission.
 
 Full detail in docs/cpp.md.
 
