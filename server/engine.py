@@ -295,9 +295,12 @@ class PagedContinuousEngine(Engine):
         self.max_batch = max_batch
         if fused:
             # decode attention reads the paged pool directly (Triton kernel on
-            # CUDA); switches the model's attention implementation over
-            from .kernels.paged_attention_triton import use_triton_attention
+            # CUDA); switches the model's attention implementation over and
+            # compiles every split variant now, not inside a request's ITL
+            from .kernels.paged_attention_triton import (
+                use_triton_attention, warm_decode_kernels)
             self._prev_attn_impl = use_triton_attention(model.model)
+            warm_decode_kernels(model.model, block_size=block_size)
         self.state = PagedBatchState(model, num_blocks=num_blocks,
                                      block_size=block_size, fused=fused)
 
@@ -403,9 +406,11 @@ class ContinuousFusedEngine(ContinuousBatchEngine):
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
                  max_batch: int = 16):
         super().__init__(model, on_finish, on_token, on_event, max_batch=max_batch)
-        from .kernels.paged_attention_triton import use_triton_attention
+        from .kernels.paged_attention_triton import (use_triton_attention,
+                                                     warm_decode_kernels)
         self._attn_model = model.model
         self._prev_attn = use_triton_attention(model.model)
+        warm_decode_kernels(model.model)
 
     def stop(self):
         super().stop()

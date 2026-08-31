@@ -1,0 +1,69 @@
+{
+  "rows": [
+    {
+      "state": "batched",
+      "batch": 1,
+      "step_ms": 36.853032166667774,
+      "forward_ms": 37.538680066666075,
+      "overhead_share": 0.0
+    },
+    {
+      "state": "batched",
+      "batch": 8,
+      "step_ms": 37.24819246666584,
+      "forward_ms": 35.96333573333368,
+      "overhead_share": 0.03449447203329414
+    },
+    {
+      "state": "batched",
+      "batch": 16,
+      "step_ms": 36.71580586666702,
+      "forward_ms": 36.92212006666674,
+      "overhead_share": 0.0
+    },
+    {
+      "state": "paged",
+      "batch": 1,
+      "step_ms": 40.482236133332584,
+      "forward_ms": 35.317597333333126,
+      "overhead_share": 0.12757790313235584
+    },
+    {
+      "state": "paged",
+      "batch": 8,
+      "step_ms": 41.907620000000634,
+      "forward_ms": 37.938754733333255,
+      "overhead_share": 0.09470509818184181
+    },
+    {
+      "state": "paged",
+      "batch": 16,
+      "step_ms": 43.95342233333395,
+      "forward_ms": 36.991239799999676,
+      "overhead_share": 0.15839909985926637
+    },
+    {
+      "state": "paged_fused",
+      "batch": 1,
+      "step_ms": 34.56957520000022,
+      "forward_ms": 34.51139986666665,
+      "overhead_share": 0.0016828477930955765
+    },
+    {
+      "state": "paged_fused",
+      "batch": 8,
+      "step_ms": 33.69286509999938,
+      "forward_ms": 32.93012536666614,
+      "overhead_share": 0.022638019386877706
+    },
+    {
+      "state": "paged_fused",
+      "batch": 16,
+      "step_ms": 34.441381233333836,
+      "forward_ms": 33.32277123333256,
+      "overhead_share": 0.03247866258391041
+    }
+  ],
+  "max_overhead_share": 0.15839909985926637,
+  "verdict": "C++ end-to-end p99 framing VIABLE"
+}

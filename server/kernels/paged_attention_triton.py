@@ -678,3 +678,43 @@ def use_triton_attention(model) -> str:
 
 def restore_attention(model, prev: str):
     model.config._attn_implementation = prev
+
+
+def warm_decode_kernels(model, block_size: int = 16) -> None:
+    """Compile every decode-kernel specialization before serving.
+
+    Triton specializes on constexprs, and NUM_SPLITS is one of them: the first
+    request whose length pushed _auto_splits past a new value paid the JIT
+    compile inside its inter-token latency. The latency study caught it as a
+    1.4-2.0s max ITL on an otherwise sub-100ms p99.9 tail. Batch size is not a
+    constexpr, so a handful of tiny launches here (one per split count, plus
+    the merge kernel they pull in) covers everything the engine can hit."""
+    try:
+        dev = next(model.parameters()).device
+        dt = next(model.parameters()).dtype
+    except StopIteration:
+        return
+    if dev.type != "cuda":
+        return
+    cfg = model.config
+    H = cfg.num_attention_heads
+    KV = getattr(cfg, "num_key_value_heads", None) or H
+    D = getattr(cfg, "head_dim", None) or cfg.hidden_size // H
+    T = 2 * block_size
+    nb = T // block_size + 1
+    q = torch.zeros(1, H, D, device=dev, dtype=dt)
+    k_pool = torch.zeros(nb * block_size, KV, D, device=dev, dtype=dt)
+    v_pool = torch.zeros_like(k_pool)
+    tables = torch.arange(nb, device=dev, dtype=torch.long).unsqueeze(0)
+    lens = torch.tensor([T], device=dev, dtype=torch.long)
+    # contiguous path (the continuous_fused engine) and its masked flavor;
+    # HAS_MASK is a constexpr too, so masked and unmasked compile separately
+    k = torch.zeros(1, KV, T, D, device=dev, dtype=dt)
+    v = torch.zeros_like(k)
+    mask = torch.zeros(1, T, device=dev, dtype=torch.float32)
+    for s in (1, 2, 4, 8):
+        paged_decode_attention(q, k_pool, v_pool, tables, lens, block_size,
+                               num_splits=s, max_len=T)
+        decode_attention(q, k, v, mask_add=None, num_splits=s)
+        decode_attention(q, k, v, mask_add=mask, num_splits=s)
+    torch.cuda.synchronize()
