@@ -22,6 +22,7 @@ repro.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import random
@@ -40,8 +41,13 @@ def pct(a, q):
     return float(np.percentile(a, q)) if len(a) else float("nan")
 
 
+_SCENARIO_SALT = {"baseline": 0, "disconnect": 1, "burst": 2, "swizzle": 3}
+
+
 def run_storm(model, engine_name, scenario, seed, a):
-    rng = random.Random(seed * 1000 + hash(scenario) % 1000)
+    # python's str hash is randomized per process; a stable salt keeps
+    # (seed, scenario) a reproducible storm across runs and machines
+    rng = random.Random(seed * 1000 + _SCENARIO_SALT.get(scenario, 9))
     reqs, offsets = build_requests(n=a.n, rate=a.rate, max_tokens=a.max_tokens,
                                    seed=seed)
     if scenario == "baseline":
@@ -153,6 +159,17 @@ def run_storm(model, engine_name, scenario, seed, a):
            "phases": {k: {"n": int(v.size), "p50": pct(v, 50),
                           "p99": pct(v, 99), "max": float(v.max()) if v.size else None}
                       for k, v in phases.items()}}
+    # each run allocates a ~1.5 GB KV pool; the engine/state/closure cycle
+    # keeps dead pools alive until a gc pass, and ten of them OOM a T4
+    eng_box.clear()
+    del eng
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
     return row
 
 

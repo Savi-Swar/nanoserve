@@ -12,6 +12,7 @@ comparison counts only if the p99 ranges don't overlap.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import threading
@@ -50,7 +51,16 @@ def one_run(model, engine_name, rate, n, max_tokens, seed, cfg):
         if len(ts) > 1:
             d = np.diff(np.asarray(ts))
             itls.append(d)
-    return np.concatenate(itls) * 1e3   # ms
+    out = np.concatenate(itls) * 1e3   # ms
+    del eng
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+    return out
 
 
 def pct(a, q):

@@ -242,7 +242,11 @@ def main():
     else:
         print("[!] no nvidia-smi; is this a CUDA box? vLLM will fail, util will be n/a.")
 
-    mode = read_mode()
+    for mode in read_mode().split("+"):
+        run_mode(mode)
+
+
+def run_mode(mode):
     if mode == "kernel":
         print(">>> mode: kernel (tests + microbench only; set "
               "scripts/gpu_run_mode.txt to 'full' for the whole pipeline)")
