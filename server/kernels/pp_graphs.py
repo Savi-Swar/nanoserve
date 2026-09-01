@@ -104,6 +104,20 @@ class StagePipelineGraphs:
         self.out1: dict[int, torch.Tensor] = {}
         self._pool0 = self._pool1 = None
 
+        # accelerate's dispatch leaves some non-persistent buffers on the
+        # cpu (the rotary inv_freq, notably); eager code pays a silent tiny
+        # H2D copy per call, but a pageable H2D inside capture is illegal
+        # (cudaErrorStreamCaptureImplicit). Pin every stage module's stray
+        # tensors to its own device; a no-op for everything already placed.
+        for mod in (self.embed, self.rotary):
+            mod.to(self.d0)
+        for mod in (self.norm, self.head):
+            mod.to(self.d1)
+        for layer in self.layers0:
+            layer.to(self.d0)
+        for layer in self.layers1:
+            layer.to(self.d1)
+
         prev_force = pat.FORCE_NUM_SPLITS
         pat.FORCE_NUM_SPLITS = 1
         saved_hooks = self._strip_hooks()
