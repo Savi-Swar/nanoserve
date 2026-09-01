@@ -52,16 +52,44 @@ One real improvement survived: TTFT p99 fell from 3.5 s to 0.54 s, because
 two halves double admission capacity and the queue drains. Interleaving here
 is a latency feature, not a throughput one.
 
-## What would actually work
+## v3: one graph per stage
 
-The bubble is the same enemy this project already beat once: python and
-launch overhead dominating the step. The single-GPU cure was capturing the
-whole step in a CUDA graph (34 -> 9.4 ms). A recording cannot span devices,
-so the sharded version needs one graph per stage per device, with the
-cross-device activation copy managed between replays. That removes the
-52 ms of python entirely and is the planned v3; the measured prediction it
-must beat is 116.7 tok/s at 36%, with the interleave layered back on top
-once the step is no longer issue-bound.
+The bubble's enemy was the same one this project beat once before: python
+dominating the step. The cure was the same too, with a twist: a CUDA graph
+cannot span devices, so the sharded step became two graphs and a
+single-copy handoff (replay stage0 on gpu0, copy the hidden states across
+the cut, replay stage1 on gpu1), with capture-time python calling the
+decoder layers directly.
+
+Getting the capture correct took four fixes, each a general lesson:
+
+1. accelerate's device hooks poison capture (their send_to_device creates a
+   dependency on uncaptured work); detached during capture, restored after.
+2. The rotary inv_freq buffer lived on the cpu (accelerate's dispatch skips
+   some non-persistent buffers), so the eager path had been paying a silent
+   host-to-device copy every step, and capture turned it into a hard error.
+3. cuBLAS allocates its workspace lazily per stream; warm up on the same
+   stream the graph records on or the allocation lands inside the capture.
+4. The nastiest: replayed rotary output ignored the position static
+   entirely (cos identical for position 3 and position 9). Under a device
+   map, module forwards route through a dynamo-compiled wrapper, and
+   capturing the compiled rotary baked the positions. Fixed by computing
+   rotary eagerly each step into statics both graphs read; a bake probe in
+   the diagnostic now guards it.
+
+Result: token-exact against hf, decode step 73 -> 23 ms (3.2x). And the
+serving numbers moved barely at all: 119 vs 116 tok/s short-output, 144 vs
+140 on 192-token outputs, utilization still 37%. The step win is real and
+the workload swallowed it, because at 7B the wall clock belongs to
+PREFILL: every admission runs the prompt through the eager hooked stack at
+a few hundred tokens per second, and sixteen of those cost about as much
+as all the decoding put together. The graphs' fingerprint shows exactly
+where prefill does not mask it: decode-heavy TTFT p99 fell 1101 -> 204 ms.
+
+So the chapter ends the way the whole project keeps ending: fix the
+bottleneck, measure, and meet the next one. Attention, then launch
+overhead, then the python issue cost, now prefill. Chunked or
+direct-stage prefill is the named next wall.
 
 A note on why not tensor parallelism: the T4 pair is PCIe-only, and TP
 needs an all-reduce every layer. Pipeline parallelism crosses the

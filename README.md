@@ -88,7 +88,11 @@ continuous sustains roughly 200x naive.
   to fill it twice; the diagnostic explains why (the step is 71%
   python-issue-bound on this host, so no issue order or thread can overlap
   it) and hands interleaving a consolation prize: TTFT p99 falls 3.5s to
-  0.54s from the doubled admission capacity ([docs/pp.md](docs/pp.md)).
+  0.54s from the doubled admission capacity. Per-stage CUDA graphs then cut
+  the decode step 73 to 23 ms (3.2x, token-exact, four capture bugs deep,
+  including positions constant-folded by a compiled wrapper), and serving
+  still barely moved: at 7B the wall clock belongs to eager prefill, the
+  fourth bottleneck in the chain ([docs/pp.md](docs/pp.md)).
 
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).
