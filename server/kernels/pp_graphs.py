@@ -93,6 +93,15 @@ class StagePipelineGraphs:
         self.s0 = statics(self.d0)
         self.s1 = statics(self.d1)
         dt = next(model.parameters()).dtype
+        self.dt = dt
+        # rotary runs EAGERLY each step, outside the graphs: under an
+        # accelerate device map the module's forward routes through a
+        # dynamo-compiled wrapper, and capturing that bakes the positions
+        # into the recording (measured: replayed cos identical for pos 3 and
+        # pos 9). Both stages read these static tables instead.
+        self.cos0 = torch.zeros(Bm, 1, rd, dtype=dt, device=self.d0)
+        self.sin0 = torch.zeros(Bm, 1, rd, dtype=dt, device=self.d0)
+        self._rope_x = torch.zeros(1, 1, dtype=dt, device=self.d0)
         # the handoff buffers: hidden states and rotary tables on stage 1
         self.hid1 = torch.zeros(Bm, 1, H, dtype=dt, device=self.d1)
         self.cos1 = torch.zeros(Bm, 1, rd, dtype=dt, device=self.d1)
@@ -177,10 +186,10 @@ class StagePipelineGraphs:
         lens = self._slots_of(s, Bp)
         cache = self._cache_of(s, Bp, lens)
         h = self.embed(s["tok"][:Bp])
-        cos, sin = self.rotary(h, s["pos"][:Bp])
+        cs = (self.cos0[:Bp], self.sin0[:Bp])
         for layer in self.layers0:
-            h = _layer_call(layer, h, s["pos"][:Bp], cache, s["cpos"], (cos, sin))
-        return h, cos.to(h.dtype), sin.to(h.dtype)
+            h = _layer_call(layer, h, s["pos"][:Bp], cache, s["cpos"], cs)
+        return h
 
     def _fwd1(self, Bp):
         s = self.s1
@@ -245,10 +254,14 @@ class StagePipelineGraphs:
             s["lens"][:B].copy_(lens)
             if Bp > B:
                 s["lens"][B:Bp].fill_(1)
+        # rotary eagerly from the LIVE positions (tiny, and immune to the
+        # compiled-wrapper bake the captures suffered)
+        cos, sin = self.rotary(self._rope_x.expand(B, 1), pos.to(self.d0))
+        self.cos0[:B].copy_(cos.to(self.dt))
+        self.sin0[:B].copy_(sin.to(self.dt))
+        self.cos1[:Bp].copy_(self.cos0[:Bp])
+        self.sin1[:Bp].copy_(self.sin0[:Bp])
         self.g0[Bp].replay()
-        h, cos, sin = self.out0[Bp]
-        self.hid1[:Bp].copy_(h)          # the cut, three copies, no python loop
-        self.cos1[:Bp].copy_(cos)
-        self.sin1[:Bp].copy_(sin)
+        self.hid1[:Bp].copy_(self.out0[Bp])   # the cut, one copy
         self.g1[Bp].replay()
         return self.out1[Bp][:B]
