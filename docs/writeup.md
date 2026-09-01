@@ -450,13 +450,16 @@ predictions, judged by rules written down with them: 2 held, 8 falsified,
   separates nanoserve from vLLM at scale is not per-step overhead, which
   shrinks; it is kernel quality, which grows with the GEMMs.
 
-That 81% needs its own honesty note, because it disagrees with the 34%
-headline above. The 34% compares nanoserve's short-output ladder against
-vLLM running its default longer decodes; this table ran both systems on the
-identical workload (n=32, rate 16, 48-token outputs). Matched, the graphed
-engine is 81% of vLLM at 0.5B. Both numbers are real; they are different
-operating points, and the matched one is the fairer comparison while the
-unmatched one is the more conservative claim.
+That 81% needed its own honesty pass, because it disagrees with the 34%
+headline above and came from one run of each system. Rerun properly (five
+runs per system on the same five workload seeds, rate 16, 32 requests,
+48-token outputs): the graphed engine does 543.8 +/- 20.9 tok/s against
+vLLM's 631.1 +/- 64.8, a matched-workload ratio of 86% with the CI-derived
+interval [75%, 100%]. The 34% compares nanoserve's short-output ladder
+against vLLM running its default longer decodes at saturation; the 86% is
+the same offered load on both systems. Both are real; they are different
+operating points. Worth noting in passing: vLLM's run-to-run throughput
+variance on this workload is three times ours.
 
 ## Why the cost model nailed it and the roofline missed by 10×
 

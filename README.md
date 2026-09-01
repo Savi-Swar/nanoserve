@@ -77,8 +77,9 @@ continuous sustains roughly 200x naive.
   preregistered two-point fit, while its interval priors were falsified in a
   single consistent direction (the T4 streams weights at 262 GB/s, faster
   than the prior allowed) and its direction claim about vLLM was cleanly
-  wrong: matched-workload percent-of-vLLM falls with scale (81% at 0.5B, 60%
-  at 3B) because what remains at scale is kernel quality, not overhead.
+  wrong: matched-workload percent-of-vLLM falls with scale (86% at 0.5B with
+  5-run error bars [75%, 100%], 60% at 3B) because what remains at scale is
+  kernel quality, not overhead.
 
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).
