@@ -1,0 +1,59 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B",
+  "device": "cuda",
+  "attn": "triton",
+  "dtype_bytes": 2,
+  "seq_len": 2048,
+  "steps": 12,
+  "mem_bandwidth_gbps": 320.0,
+  "params": 493961216,
+  "kv_bytes_per_token": 12288,
+  "weights_bytes": 987922432,
+  "predicted_crossover_batch": 39.256510416666664,
+  "measured_crossover_batch": null,
+  "measured_crossover_reason": "no jump fell below 0.5 scaling efficiency; throughput still scaled ~linearly across the whole sweep; crossover is beyond the largest B tested",
+  "oom_at_batch": 32,
+  "cpu_smoke_test": false,
+  "note": "",
+  "sweep": [
+    {
+      "batch": 1,
+      "seq_len_ctx": 2062,
+      "steps": 12,
+      "elapsed_s": 0.42050403500024913,
+      "decode_tok_s": 28.53718157542267,
+      "per_step_ms": 35.04200291668743,
+      "predicted_ceiling_tok_s": 315.8658666752919
+    },
+    {
+      "batch": 4,
+      "seq_len_ctx": 2062,
+      "steps": 12,
+      "elapsed_s": 0.44392988300023717,
+      "decode_tok_s": 108.12518336364023,
+      "per_step_ms": 36.99415691668643,
+      "scaling_eff_to_next": 0.9296409969320147,
+      "predicted_ceiling_tok_s": 1175.8375726197285
+    },
+    {
+      "batch": 8,
+      "seq_len_ctx": 2062,
+      "steps": 12,
+      "elapsed_s": 0.4488516219998928,
+      "decode_tok_s": 213.87914244859948,
+      "per_step_ms": 37.4043018333244,
+      "scaling_eff_to_next": 0.9780696392374548,
+      "predicted_ceiling_tok_s": 2152.6189623343344
+    },
+    {
+      "batch": 16,
+      "seq_len_ctx": 2062,
+      "steps": 12,
+      "elapsed_s": 0.41324784800008274,
+      "decode_tok_s": 464.61221983172084,
+      "per_step_ms": 34.437320666673564,
+      "scaling_eff_to_next": 1.1723119632545695,
+      "predicted_ceiling_tok_s": 3681.928505785046
+    }
+  ]
+}

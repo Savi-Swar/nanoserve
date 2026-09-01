@@ -607,9 +607,12 @@ For an ML-infra / systems screener:
 
 - Wrote a paged-attention decode kernel in Triton (online softmax, native GQA,
   block-table indexing, split-K flash-decoding with a fused merge): 5-8x over
-  the PyTorch SDPA path at op level, lifting the serving ladder to 10.5x naive
-  and moving the measured decode-scaling knee from B~4 to beyond the testable
-  range; token-exactness held via a tie-aware oracle.
+  the PyTorch SDPA path at op level, moving the measured decode-scaling knee
+  from B~4 to beyond the testable range; token-exactness held via a tie-aware
+  oracle. Then captured the whole fused decode step in CUDA graphs (bucketed
+  by batch, static buffers, replay-safe as sequences grow): the step fell 34
+  to 9.4 ms and the serving ladder jumped from 10.7x to 23.7x naive, 34% of
+  vLLM with a better TTFT p99 than vLLM on the same T4 workload.
 - Moved the scheduler's hot path to C++ (lock-free block allocator, one
   pybind crossing per decode step) after a written 15% overhead gate scoped
   what it could claim; proved Python/C++ equivalence by hashing every

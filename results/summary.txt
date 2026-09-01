@@ -1,0 +1,45 @@
+nanoserve GPU run summary
+========================================
+
+steps: sweep=ok, plot=ok, memory=ok, trace=ok, spec=ok, prefix=ok, kvquant=ok, goodput=ok, spec_cost=ok, spec_batched=ok, noise=ok, noise_kernel=ok, noise_graph=ok, crossover=ok, crossover_triton=ok, kernel_bench=ok, roofline=ok, scale=ok, vllm=ok
+
+throughput ladder (peak tok/s per engine, fp16):
+  naive                 24.4 tok/s   TTFT p99    62898 ms   (rate 16.0)
+  static               126.3 tok/s   TTFT p99     7308 ms   (rate 8.0)
+  continuous           242.8 tok/s   TTFT p99     2520 ms   (rate 16.0)
+  continuous_fused     262.0 tok/s   TTFT p99     2221 ms   (rate 16.0)
+  paged                206.0 tok/s   TTFT p99     3324 ms   (rate 16.0)
+  paged_fused          251.7 tok/s   TTFT p99     2376 ms   (rate 16.0)
+  paged_fused_graph    578.3 tok/s   TTFT p99      574 ms   (rate 16.0)
+  continuous vs naive: 9.9x
+  continuous_fused vs naive: 10.7x
+  paged vs naive: 8.4x
+  paged_fused vs naive: 10.3x
+  paged_fused_graph vs naive: 23.7x
+
+vLLM reference: 1715.086623316623 tok/s (TTFT p99 966 ms)
+  nanoserve best is 34% of vLLM
+
+paged fragmentation: reserve 68% vs paged 4%
+  seqs in 256 MiB: reserve 42 vs paged 128
+
+goodput req/s (SLO 500ms TTFT / 50ms TPOT): naive 0.0, static 0.2, continuous 3.0, paged 0.4
+  continuous sustains 194.4x naive's goodput under SLO
+
+roofline crossover (S=2048): predicted B*=39, measured ~= 4
+  with triton decode kernel: measured ~= None
+  decode tok/s sdpa->triton: B1:25->29  B4:100->108  B8:149->214  B16:165->465
+
+decode kernel vs sdpa (T=2048): B1:4.5x  B4:6.4x  B8:5.6x  B16:7.3x  B32:7.8x
+
+batched spec, generic: peak 1.0x vs continuous, net LOSS at batch>=2
+batched spec, grounded: peak 5.4x vs continuous, stayed a win
+
+scale axis (batch-1 spec tok/forward + predicted B*):
+  Qwen2.5-0.5B   generic 1.07  grounded 4.00  prefix 40%  8bit-ppl-d -0.63  B* 39
+  Qwen2.5-1.5B   generic 1.00  grounded 4.00  prefix 40%  8bit-ppl-d -0.02  B* 53
+  Qwen2.5-3B     generic 1.07  grounded 4.00  prefix 40%  8bit-ppl-d -0.01  B* 82
+
+audit spec: {"grounded": {"exact": true, "tokens_per_forward": 2.6666666666666665, "draft_accept_rate": 0.9230769230769231, "forwards": 36, "committed": 96}, "code": {"exact": true, "tokens_per_forward": 2.2857142857142856, "draft_accept_rate": 0.5192307692307693, "forwards": 42, "committed": 96}, "generic": {"
+audit prefix: {"shared": {"prefill_tokens_total": 220, "prefill_tokens_computed": 66, "prefill_saved": 0.7, "hits": 5, "exact": true}, "distinct": {"prefill_tokens_total": 226, "prefill_tokens_computed": 212, "prefill_saved": 0.06194690265486724, "hits": 5, "exact": true}}
+audit kv_quant: {"fp16_perplexity": 28.744178474848464, "8": {"mem_vs_fp32": 4.0, "mem_vs_fp16": 2.0, "top1_agreement": 0.92, "steps": 200, "perplexity": 27.90204460456203}, "4": {"mem_vs_fp32": 8.0, "mem_vs_fp16": 4.0, "top1_agreement": 0.475, "steps": 200, "perplexity": 443.03858341224003}, "2": {"mem_vs_fp32": 1

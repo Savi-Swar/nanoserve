@@ -107,6 +107,12 @@ static buffers, replay per step) measured:
 
 The eager step really was about three quarters launch overhead. Serving
 through it, p50 inter-token latency falls 34.2 to 9.2 ms and p90 69.9 to 9.9.
+End to end it is the largest single jump in the project: the graphed engine
+does 578.3 tok/s peak in the ladder (23.7x naive, 34% of vLLM's 1,715 on the
+same T4) against 251.7 for the eager fused engine, confirmed past the noise
+floor at +88.7% over 5 runs, and its TTFT p99 of 574 ms is better than
+vLLM's 966 ms on this workload. GPU utilization finally looks like a served
+GPU: 94-95% peak against the eager engine's 37%.
 
 Three details made the capture correct rather than merely fast. The paged
 kernel bounds its loop with the per-row length loaded from a device tensor,

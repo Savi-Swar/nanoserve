@@ -1,0 +1,54 @@
+{
+  "heads": 14,
+  "kv_heads": 2,
+  "head_dim": 64,
+  "seq_len": 2048,
+  "device": "Tesla T4",
+  "rows": [
+    {
+      "batch": 1,
+      "sdpa_ms": 0.4370848083496094,
+      "triton_ms": 0.12489279747009277,
+      "triton_split_ms": 0.09748479843139649,
+      "splits": 8,
+      "speedup": 3.499679863078374,
+      "split_speedup": 4.4836201682993835
+    },
+    {
+      "batch": 4,
+      "sdpa_ms": 0.7411519622802735,
+      "triton_ms": 0.14941887855529784,
+      "triton_split_ms": 0.11551424026489258,
+      "splits": 4,
+      "speedup": 4.960229720945091,
+      "split_speedup": 6.4161090492453035
+    },
+    {
+      "batch": 8,
+      "sdpa_ms": 0.9952044677734375,
+      "triton_ms": 0.17453056335449219,
+      "triton_split_ms": 0.17634239196777343,
+      "splits": 2,
+      "speedup": 5.702178739617426,
+      "split_speedup": 5.643591745967193
+    },
+    {
+      "batch": 16,
+      "sdpa_ms": 1.9519078063964843,
+      "triton_ms": 0.2863564872741699,
+      "triton_split_ms": 0.26800128936767575,
+      "splits": 1,
+      "speedup": 6.816356161429109,
+      "split_speedup": 7.283203043544418
+    },
+    {
+      "batch": 32,
+      "sdpa_ms": 3.2872280883789062,
+      "triton_ms": 0.4514201736450195,
+      "triton_split_ms": 0.42171520233154297,
+      "splits": 1,
+      "speedup": 7.281969837182915,
+      "split_speedup": 7.794900611134625
+    }
+  ]
+}

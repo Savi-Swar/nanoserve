@@ -13,20 +13,28 @@ which published inference optimizations actually help on realistic workloads.
 
 | engine | throughput | vs naive | p99 TTFT |
 |---|---|---|---|
-| naive | 27.4 tok/s | 1x | 56 s |
-| static batching | 140.4 tok/s | 5.1x | 7.8 s |
-| continuous batching | 272.6 tok/s | 9.9x | 2.1 s |
-| paged KV (gather + SDPA) | 228.3 tok/s | 8.3x | 2.9 s |
-| paged KV + triton kernel | 274.5 tok/s | 10.0x | 2.1 s |
-| **continuous + triton kernel** | **286.7 tok/s** | **10.5x** | **1.9 s** |
+| naive | 24.4 tok/s | 1x | 63 s |
+| static batching | 126.3 tok/s | 5.2x | 7.3 s |
+| continuous batching | 242.8 tok/s | 9.9x | 2.5 s |
+| paged KV (gather + SDPA) | 206.0 tok/s | 8.4x | 3.3 s |
+| paged KV + triton kernel | 251.7 tok/s | 10.3x | 2.4 s |
+| continuous + triton kernel | 262.0 tok/s | 10.7x | 2.2 s |
+| **paged + kernel + CUDA graphs** | **578.3 tok/s** | **23.7x** | **0.57 s** |
+
+(one internally consistent T4 run; earlier runs put the pre-graph engines
+at 273-287 tok/s, same ladder shape)
 
 The decode attention is a hand-written Triton kernel (online softmax, native
 GQA, block-table indexing over the paged pool, split-K flash-decoding): 5-8x
 over the PyTorch SDPA path at op level, and it moves the measured decode-
-scaling knee from B~4 out beyond the testable range (162 -> 495 tok/s at
-B=16, S=2048). Details and the two instructive failures in
-[docs/kernel.md](docs/kernel.md). Best engine reaches 17% of vLLM (1,708
-tok/s). Measured as goodput (req/s meeting a 500 ms TTFT / 50 ms TPOT SLO)
+scaling knee from B~4 out beyond the testable range. Capturing the whole
+fused decode step in CUDA graphs then removed the launch overhead that
+dominated it: the step falls from 34 to 9.4 ms, and the graphed engine more
+than doubles the eager one end to end (+88.7% at the 5-run noise floor,
+419.8 vs 222.4 tok/s). Details and the instructive failures in
+[docs/kernel.md](docs/kernel.md). Best engine reaches 34% of vLLM (1,715
+tok/s) and beats vLLM's TTFT p99 on this workload (574 ms vs 966 ms).
+Measured as goodput (req/s meeting a 500 ms TTFT / 50 ms TPOT SLO)
 continuous sustains roughly 200x naive.
 
 ## What it found
