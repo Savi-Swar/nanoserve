@@ -260,6 +260,13 @@ def run_mode(mode):
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "pp_probe":
+        print(">>> mode: pp_probe (does 7B fit across 2x T4, and how)")
+        os.makedirs("results", exist_ok=True)
+        os.system(f"{PY} scripts/pp_probe.py 2>&1 | tee results/kernel_ci_log.txt")
+        with open("results/summary.txt", "w") as f:
+            f.write("pp_probe-mode run\n")
+        return
     if mode == "scaleserve":
         print(">>> mode: scaleserve (predict-then-measure across model scale)")
         LOG = "results/kernel_ci_log.txt"
