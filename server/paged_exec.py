@@ -153,9 +153,13 @@ class PagedBatchState:
         # each step is a buffer copy plus one replay. Requires the fused path
         # and a CUDA device; silently stays un-graphed otherwise.
         self._graphed = None
+        # blocks the state holds for itself (graph mode's scratch block);
+        # accounting checks should expect num_free == num_blocks - this
+        self.reserved_blocks = 0
         if graphs and fused and str(model.device).startswith("cuda"):
             from .kernels.graph_step import GraphedDecode
             self.alloc.add_seq(-7, 1)      # scratch block for pad rows
+            self.reserved_blocks = 1
             scratch = self.alloc.tables[-7][0]
             for li in range(self.store.n_layers):
                 self.store._flat(self.store.key[li])[

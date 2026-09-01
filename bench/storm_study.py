@@ -128,8 +128,9 @@ def run_storm(model, engine_name, scenario, seed, a):
     # --- invariants (the point of the exercise) ------------------------
     violations = []
     free = getattr(getattr(eng.state, "alloc", None), "num_free", None)
-    if free is not None and free != a.num_blocks:
-        violations.append(f"blocks leaked: {a.num_blocks - free}")
+    expected = a.num_blocks - getattr(eng.state, "reserved_blocks", 0)
+    if free is not None and free != expected:
+        violations.append(f"blocks leaked: {expected - free}")
     for r in reqs:
         if r.status not in ("done", "cancelled", "rejected", "timeout"):
             violations.append(f"req {r.id} non-terminal: {r.status}")
