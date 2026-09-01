@@ -97,6 +97,44 @@ def main():
             m.sync()
             hg2 = spg.out0[Bp][0]
             print(f"stage0 replay-vs-replay          = {mad(hg, hg2):.6f}")
+
+            # bake test: if replayed cos ignores the pos static, the capture
+            # froze the position input instead of re-reading it
+            spg.s0["pos"][:Bp].fill_(3)
+            spg.g0[Bp].replay(); m.sync()
+            c3 = spg.out0[Bp][1].clone()
+            spg.s0["pos"][:Bp].fill_(9)
+            spg.g0[Bp].replay(); m.sync()
+            c9 = spg.out0[Bp][1]
+            print(f"cos(pos=3) vs cos(pos=9) diff    = {mad(c3, c9):.6f} "
+                  f"(0 means position is BAKED)")
+            spg.s0["tok"][:Bp].fill_(11)
+            spg.g0[Bp].replay(); m.sync()
+            h11 = spg.out0[Bp][0].clone()
+            spg.s0["tok"][:Bp].fill_(99)
+            spg.g0[Bp].replay(); m.sync()
+            h99 = spg.out0[Bp][0]
+            print(f"h(tok=11) vs h(tok=99) diff      = {mad(h11, h99):.6f} "
+                  f"(0 means token is BAKED)")
+            spg.s0["lens"][:Bp].fill_(2)
+            spg.g0[Bp].replay(); m.sync()
+            l2 = spg.out0[Bp][0].clone()
+            spg.s0["lens"][:Bp].fill_(5)
+            spg.g0[Bp].replay(); m.sync()
+            l5 = spg.out0[Bp][0]
+            print(f"h(lens=2) vs h(lens=5) diff      = {mad(l2, l5):.6f} "
+                  f"(0 means lens is BAKED)")
+
+            # which side is the truth: run the EAGER stage0 output through
+            # eager stage1 and compare with the known-good reference argmax
+            spg.hid1[:Bp].copy_(he)
+            spg.cos1[:Bp].copy_(cose)
+            spg.sin1[:Bp].copy_(sine)
+            m.sync()
+            with torch.no_grad():
+                lg_from_eager = spg._fwd1(Bp).clone()
+            m.sync()
+            print(f"  eager-chain argmax {lg_from_eager[:B, -1].argmax(-1).tolist()}")
         finally:
             spg._restore_hooks(saved)
 
