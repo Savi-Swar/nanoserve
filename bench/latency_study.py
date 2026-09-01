@@ -92,7 +92,7 @@ def main():
           f"{'p99.9':>8} {'max':>8}   (ITL ms, pooled)")
     for name in a.engines:
         cfg = {"max_batch": a.max_batch}
-        if name in ("paged", "paged_fused", "paged_fused_cpp", "paged_fused_graph"):
+        if name in ("paged", "paged_fused", "paged_fused_cpp", "paged_fused_graph", "paged_fused_pp2"):
             cfg["num_blocks"] = a.num_blocks
         pools, p99s = [], []
         for r in range(a.runs):

@@ -299,6 +299,11 @@ def run_mode(mode):
             "--engines", "paged_fused", "--rates", "8",
             "--n", "24", "--max-tokens", "48",
             "--out", "results/sweep_7B_fused.json"], tee=LOG, timeout=2400)
+        step("7B pipeline ladder: interleaved (pp2)", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "paged_fused_pp2", "--rates", "8",
+            "--n", "24", "--max-tokens", "48",
+            "--out", "results/sweep_7B_pp2.json"], tee=LOG, timeout=2400)
         with open("results/summary.txt", "w") as f:
             f.write("pp-mode run\n")
         return

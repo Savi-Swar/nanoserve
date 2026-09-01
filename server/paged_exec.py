@@ -293,10 +293,16 @@ class PagedBatchState:
 
     @torch.no_grad()
     def _step_fused(self) -> list[int]:
-        """Decode without the gather: NanoPagedCache scatters the new token's
-        KV into the pool inside the model forward, and the registered
-        attention fn reads the pool through the block tables. Same sampling
-        and bookkeeping as the gather path, token for token."""
+        return self._finish_step(self.forward_async())
+
+    @torch.no_grad()
+    def forward_async(self) -> torch.Tensor:
+        """Issue the fused decode forward and return this step's last-token
+        logits WITHOUT synchronizing. CUDA work is queued, not finished; the
+        sync happens when the caller reads the logits (sampling). Splitting
+        the step here is what lets a pipeline-sharded model interleave two
+        half-batches: issue A, issue B (B's first stage overlaps A's second),
+        then sample both."""
         from .kernels.paged_runtime import NanoPagedCache
 
         dev = self.m.device
@@ -315,7 +321,7 @@ class PagedBatchState:
             lens_t += 1
             for i in range(B):
                 self.true_len[i] += 1
-            return self._finish_step(logits[:, -1, :])
+            return logits[:, -1, :]
 
         # each row's write slot for this step's token, no per-row python
         blk = tables_t.gather(1, (lens_t // bs).unsqueeze(1)).squeeze(1)
@@ -334,7 +340,12 @@ class PagedBatchState:
         lens_t += 1
         for i in range(B):
             self.true_len[i] += 1
-        return self._finish_step(out.logits[:, -1, :])
+        return out.logits[:, -1, :]
+
+    @torch.no_grad()
+    def finish_async(self, logits: torch.Tensor) -> list[int]:
+        """Sample and retire for a forward_async() issued earlier."""
+        return self._finish_step(logits)
 
     @torch.no_grad()
     def _step_gather(self) -> list[int]:

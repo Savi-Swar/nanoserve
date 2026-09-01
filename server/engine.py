@@ -438,6 +438,122 @@ class GraphPagedEngine(FusedPagedEngine):
                          block_size=block_size, graphs=True)
 
 
+class InterleavedPagedEngine(Engine):
+    """Two fused paged half-batches interleaved for a pipeline-sharded model.
+
+    With layers split across GPUs, one batch runs the stages sequentially and
+    each GPU idles while the other works (measured 36% mean utilization on
+    the 7B two-T4 split). This engine keeps two half-batches at independent
+    decode steps and issues their forwards back to back: CUDA queues both
+    without waiting, so B's first stage runs on gpu0 while A's second stage
+    runs on gpu1. Sampling, the sync point, happens after both are in
+    flight. Single-GPU it degrades to two smaller batches (usually slower);
+    it exists for the sharded case."""
+
+    name = "paged_fused_pp2"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event)
+        from .kernels.paged_attention_triton import (use_triton_attention,
+                                                     warm_decode_kernels)
+        from .paged_exec import PagedBatchState
+        self.max_batch = max_batch
+        self._attn_model = model.model
+        self._prev_attn = use_triton_attention(model.model)
+        warm_decode_kernels(model.model, block_size=block_size)
+        half = max(1, max_batch // 2)
+        self._half = half
+        self.states = [PagedBatchState(model, num_blocks=num_blocks // 2,
+                                       block_size=block_size, fused=True)
+                       for _ in range(2)]
+        self.state = self.states[0]   # cancel-path/tests poke .state
+
+    def stop(self):
+        super().stop()
+        from .kernels.paged_attention_triton import restore_attention
+        restore_attention(self._attn_model, self._prev_attn)
+
+    def _size(self):
+        return sum(st.size for st in self.states)
+
+    def _run(self):
+        stop = False
+        pending: list[Request] = []
+        while True:
+            if self._size() == 0 and not pending and self._q.empty():
+                item = self._q.get()
+                if item is _SENTINEL:
+                    return
+                pending.append(item)
+            while not self._q.empty() and len(pending) < self.max_batch:
+                item = self._q.get_nowait()
+                if item is _SENTINEL:
+                    stop = True
+                    break
+                pending.append(item)
+
+            now = time.perf_counter()
+            pending = [r for r in pending if not self._skip_before_admit(r, now)]
+
+            still, newly = [], []
+            for req in pending:
+                # emptier half first, so the two stay balanced
+                st = min(self.states, key=lambda s: s.size)
+                room = st.size < self._half
+                fits = st.can_admit(req)
+                if not fits and self._size() == 0 and not still:
+                    req.status = "rejected"
+                    req.finish_time = time.perf_counter()
+                    self._emit("rejected", req)
+                    self.on_finish(req)
+                    continue
+                force = self._size() == 0 and not still
+                if room and (fits or force):
+                    req.schedule_time = time.perf_counter()
+                    req.status = "running"
+                    self._emit("scheduled", req)
+                    st.add([req])
+                    newly.append(req)
+                else:
+                    still.append(req)
+            pending = still
+            for r in newly:
+                self._emit("first_token", r)
+                if self.on_token:
+                    self.on_token(r, r.output_tokens[-1])
+
+            for st in self.states:
+                dead = self._collect_dead(st, time.perf_counter())
+                if dead:
+                    dead_reqs = [st.reqs[i] for i in dead]
+                    st.evict(dead)
+                    for r in dead_reqs:
+                        self._emit(r.status, r)
+                        self.on_finish(r)
+
+            live = [st for st in self.states if st.size > 0]
+            if live:
+                # issue every forward before sampling any: the sharded
+                # stages of different halves overlap across GPUs
+                logits = [st.forward_async() for st in live]
+                for st, lg in zip(live, logits):
+                    finished = sorted(st.finish_async(lg))
+                    if self.on_token:
+                        for i in range(st.size):
+                            self.on_token(st.reqs[i], st.reqs[i].output_tokens[-1])
+                    done_reqs = [st.reqs[i] for i in finished]
+                    if finished:
+                        st.evict(finished)
+                    for r in done_reqs:
+                        r.status = "done"
+                        self._emit("finish", r)
+                        self.on_finish(r)
+
+            if stop and self._size() == 0 and not pending and self._q.empty():
+                return
+
+
 class CppPagedEngine(FusedPagedEngine):
     """The fused paged engine with block bookkeeping in nanoserve_core (the
     C++ allocator). Serving through it is the integration proof for the C++
@@ -484,5 +600,6 @@ ENGINES = {
     ContinuousFusedEngine.name: ContinuousFusedEngine,
     CppPagedEngine.name: CppPagedEngine,
     GraphPagedEngine.name: GraphPagedEngine,
+    InterleavedPagedEngine.name: InterleavedPagedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)
