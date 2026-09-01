@@ -1,0 +1,51 @@
+{
+  "calibration": {
+    "bw_kv_gbs": 53.38205090909093,
+    "bw_w_gbs_range": [
+      105.54122778381883,
+      184.29546684433188
+    ],
+    "t_o_bracket_ms": [
+      0.0,
+      4.0
+    ],
+    "ladder_utilization": 0.3379440625
+  },
+  "models": {
+    "1.5B": {
+      "weight_gb": 3.087138816,
+      "kv_per_token": 28672,
+      "P1_t_b1_c128_ms": [
+        20.81977957691087,
+        29.319298632269255
+      ],
+      "t_b16_c1024_ms": [
+        29.551029576910867,
+        38.050548632269255
+      ],
+      "P3_ladder_peak_toks": [
+        123.93653225009993,
+        318.929543282798
+      ]
+    },
+    "3B": {
+      "weight_gb": 6.171394048,
+      "kv_per_token": 36864,
+      "P1_t_b1_c128_ms": [
+        37.57480548395351,
+        58.56216824888767
+      ],
+      "t_b16_c1024_ms": [
+        48.800698341096364,
+        69.78806110603053
+      ],
+      "P3_ladder_peak_toks": [
+        62.94531265996442,
+        179.57480687259738
+      ]
+    }
+  },
+  "P2": "after 1.5B lands, solve (BW_w, t_o) exactly from the two B=1 ctx=128 points (0.5B, 1.5B); the 3B B=1 ctx=128 prediction from that pair must land within 15%",
+  "P4": "graph peak >= 1.5x eager fused peak at every model size",
+  "P5": "direction only: nanoserve's percent of vLLM at 3B exceeds the 34 percent measured at 0.5B (the remaining gap is per-step overhead, which amortizes as the GEMMs grow)"
+}
