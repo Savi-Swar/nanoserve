@@ -299,6 +299,12 @@ def run_mode(mode):
             "--engines", "paged_fused", "--rates", "8",
             "--n", "24", "--max-tokens", "48",
             "--out", "results/sweep_7B_fused.json"], tee=LOG, timeout=2400)
+        os.system(f"{PY} scripts/pp_diag.py 2>&1 | tee -a {LOG}")
+        step("7B pipeline ladder: interleaved threaded (pp2t)", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "paged_fused_pp2t", "--rates", "8",
+            "--n", "24", "--max-tokens", "48",
+            "--out", "results/sweep_7B_pp2t.json"], tee=LOG, timeout=2400)
         step("7B pipeline ladder: interleaved (pp2)", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
             "--engines", "paged_fused_pp2", "--rates", "8",

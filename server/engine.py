@@ -453,7 +453,8 @@ class InterleavedPagedEngine(Engine):
     name = "paged_fused_pp2"
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
-                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
+                 threaded: bool = False):
         super().__init__(model, on_finish, on_token, on_event)
         from .kernels.paged_attention_triton import (use_triton_attention,
                                                      warm_decode_kernels)
@@ -472,6 +473,10 @@ class InterleavedPagedEngine(Engine):
                                        block_size=block_size, fused=True)
                        for _ in range(2)]
         self.state = self.states[0]   # cancel-path/tests poke .state
+        self._threaded = threaded
+        if threaded:
+            from concurrent.futures import ThreadPoolExecutor
+            self._pool_exec = ThreadPoolExecutor(max_workers=2)
 
     def stop(self):
         super().stop()
@@ -538,9 +543,18 @@ class InterleavedPagedEngine(Engine):
 
             live = [st for st in self.states if st.size > 0]
             if live:
-                # issue every forward before sampling any: the sharded
-                # stages of different halves overlap across GPUs
-                logits = [st.forward_async() for st in live]
+                # one thread per half: v21 measured that back-to-back async
+                # issue overlaps nothing because the step is python-issue
+                # bound (walking 28 hooked layers costs CPU comparable to
+                # the GPU stage). With two threads, each half's python runs
+                # during the other half's GPU time; the GIL drops inside
+                # every kernel launch and cross-device copy.
+                if len(live) > 1 and self._threaded:
+                    futs = [self._pool_exec.submit(st.forward_async)
+                            for st in live]
+                    logits = [f.result() for f in futs]
+                else:
+                    logits = [st.forward_async() for st in live]
                 for st, lg in zip(live, logits):
                     finished = sorted(st.finish_async(lg))
                     if self.on_token:
@@ -556,6 +570,18 @@ class InterleavedPagedEngine(Engine):
 
             if stop and self._size() == 0 and not pending and self._q.empty():
                 return
+
+
+class ThreadedInterleavedEngine(InterleavedPagedEngine):
+    """The interleaved engine with per-half issue threads (see _run)."""
+
+    name = "paged_fused_pp2t"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event,
+                         max_batch=max_batch, num_blocks=num_blocks,
+                         block_size=block_size, threaded=True)
 
 
 class CppPagedEngine(FusedPagedEngine):
@@ -605,5 +631,6 @@ ENGINES = {
     CppPagedEngine.name: CppPagedEngine,
     GraphPagedEngine.name: GraphPagedEngine,
     InterleavedPagedEngine.name: InterleavedPagedEngine,
+    ThreadedInterleavedEngine.name: ThreadedInterleavedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)
