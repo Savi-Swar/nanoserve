@@ -192,22 +192,36 @@ class StagePipelineGraphs:
             h = _layer_call(layer, h, s["pos"][:Bp], cache, s["cpos"], cs)
         return self.head(self.norm(h))
 
+    def _stream_of(self, dev):
+        # one long-lived stream per device, used for BOTH warmup and capture:
+        # cublas allocates its workspace lazily per stream, and that
+        # allocation inside a capture is an unsupported operation. Warming on
+        # the same stream the graph records on puts the workspace in place
+        # before capture begins.
+        key = str(dev)
+        if not hasattr(self, "_streams"):
+            self._streams = {}
+        if key not in self._streams:
+            self._streams[key] = torch.cuda.Stream(dev)
+        return self._streams[key]
+
     @torch.no_grad()
     def _capture(self, Bp):
         for dev, fwd, graphs, outs, pool_attr in (
                 (self.d0, self._fwd0, self.g0, self.out0, "_pool0"),
                 (self.d1, self._fwd1, self.g1, self.out1, "_pool1")):
             with torch.cuda.device(dev):
-                st = torch.cuda.Stream(dev)
+                torch.cuda.synchronize(dev)
+                st = self._stream_of(dev)
                 st.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(st):
                     for _ in range(2):
                         fwd(Bp)
-                torch.cuda.current_stream().wait_stream(st)
+                torch.cuda.synchronize(dev)
                 g = torch.cuda.CUDAGraph()
                 pool = getattr(self, pool_attr)
                 kw = {"pool": pool} if pool is not None else {}
-                with torch.cuda.graph(g, **kw):
+                with torch.cuda.graph(g, stream=st, **kw):
                     outs[Bp] = fwd(Bp)
                 if pool is None:
                     setattr(self, pool_attr, g.pool())
