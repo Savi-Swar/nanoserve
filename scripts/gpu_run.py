@@ -266,6 +266,24 @@ def run_mode(mode):
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "match":
+        print(">>> mode: match (5-run matched-workload percent of vllm)")
+        LOG = "results/kernel_ci_log.txt"
+        step("nanoserve graphed engine, 5 runs", [
+            "bench.repeat", "--engine", "paged_fused_graph", "--runs", "5",
+            "--rate", "16", "--n", "32", "--max-tokens", "48",
+            "--device", "cuda", "--out", "results/repeat.json"],
+            tee=LOG, timeout=1500)
+        for i in range(5):   # same 5 workload seeds as ours; vllm LAST
+            step(f"vllm matched run {i}", [
+                "bench.vllm_ref", "--n", "32", "--rate", "16",
+                "--max-tokens", "48", "--seed", str(i),
+                "--out", f"results/vllm_m{i}.json"], tee=LOG, timeout=900)
+        step("ratio with error bars", ["bench.match_compare"], tee=LOG)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("match-mode run\n")
+        return
     if mode == "pp":
         print(">>> mode: pp (7B across two T4s: exactness, then serving)")
         LOG = "results/kernel_ci_log.txt"

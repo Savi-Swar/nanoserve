@@ -83,6 +83,7 @@ def main():
     p.add_argument("--engine", default="continuous")
     p.add_argument("--compare", nargs=2, default=None, metavar=("A", "B"))
     p.add_argument("--runs", type=int, default=5)
+    p.add_argument("--out", default=None)
     p.add_argument("--rate", type=float, default=8.0)
     p.add_argument("--n", type=int, default=24)
     p.add_argument("--max-tokens", type=int, default=32)
@@ -102,6 +103,16 @@ def main():
     for eng in engines:
         print(f"\n>>> {eng}: {a.runs} runs")
         results[eng] = measure(model, a, eng, a.runs)
+
+    if a.out:
+        import json
+        import os
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        with open(a.out, "w") as f:
+            json.dump({"engines": {e: {"throughputs": results[e][0].xs,
+                                       "ttft_p99s": results[e][1].xs}
+                                   for e in engines}}, f, indent=2)
+        print(f"wrote {a.out}")
 
     print("\n" + "=" * 60)
     for eng in engines:
