@@ -421,6 +421,43 @@ stops rather than losing the run. Takeaway: the model gets the mechanism right
 for sizing a batch is the measured B≈4, not the textbook B\*≈39 — the gap between
 the two *is* the finding.
 
+## Predictions first, then two bigger models
+
+The phase-3 prereg discipline, exercised free: a two-bandwidth cost model
+for the graphed engine's decode step,
+
+    t_step = W / BW_w + t_o + B * ctx * kv_per_token / BW_kv
+
+was calibrated on 0.5B alone and its predictions for 1.5B and 3B were
+committed to git before either model had ever run (commit 8799746). Ten
+predictions, judged by rules written down with them: 2 held, 8 falsified,
+0 fudged. The falsifications are the useful part.
+
+- The conditional prediction held, and sharply. P2's recipe (fit the
+  inseparable pair (BW_w, t_o) exactly on 0.5B plus 1.5B, then predict 3B
+  inside 15%) landed at 5.4% error: predicted 29.2 ms, measured 30.8. The
+  fit says BW_w = 262 GB/s and t_o = 5.6 ms.
+- Every interval prediction missed in the same direction for one reason:
+  the prior bracketed t_o at 4 ms and it is really 5.6, which forced the
+  bracket's implied weight bandwidth down to 106-184 GB/s when the T4
+  actually streams weights at 262 (82% of its 320 peak). Everything
+  measured faster than the intervals. One bad prior, ten coupled bands.
+- The graph advantage decays with scale, as the mechanism says it must:
+  1.71x over the eager engine at 1.5B, 1.38x at 3B. Launch overhead is a
+  fixed cost that bigger GEMMs amortize on their own.
+- The direction claim was just wrong. Predicted: percent-of-vLLM rises
+  with model size. Measured: 81% at 0.5B, 68% at 1.5B, 60% at 3B. What
+  separates nanoserve from vLLM at scale is not per-step overhead, which
+  shrinks; it is kernel quality, which grows with the GEMMs.
+
+That 81% needs its own honesty note, because it disagrees with the 34%
+headline above. The 34% compares nanoserve's short-output ladder against
+vLLM running its default longer decodes; this table ran both systems on the
+identical workload (n=32, rate 16, 48-token outputs). Matched, the graphed
+engine is 81% of vLLM at 0.5B. Both numbers are real; they are different
+operating points, and the matched one is the fairer comparison while the
+unmatched one is the more conservative claim.
+
 ## Why the cost model nailed it and the roofline missed by 10×
 
 Two predictions in this repo, opposite outcomes. The speculative-decoding cost

@@ -72,6 +72,14 @@ continuous sustains roughly 200x naive.
   155 ms) and an admission wedge where a request too big to ever fit killed
   the engine thread and starved the queue (now rejected).
 
+- Predictions committed before measurement: a two-bandwidth cost model
+  calibrated only on 0.5B predicted the 3B decode step within 5.4% via its
+  preregistered two-point fit, while its interval priors were falsified in a
+  single consistent direction (the T4 streams weights at 262 GB/s, faster
+  than the prior allowed) and its direction claim about vLLM was cleanly
+  wrong: matched-workload percent-of-vLLM falls with scale (81% at 0.5B, 60%
+  at 3B) because what remains at scale is kernel quality, not overhead.
+
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).
 
