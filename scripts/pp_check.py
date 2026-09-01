@@ -83,6 +83,44 @@ def main():
         raise SystemExit("pipeline path diverged from hf generation")
     print("token-exact through the cut")
 
+    # the per-stage graph path: same prompts, same tokens required
+    prev = use_triton_attention(m.model)
+    try:
+        t0 = time.perf_counter()
+        state = PagedBatchState(m, num_blocks=2048, block_size=16, fused=True,
+                                graphs=True, graph_buckets=[1, 2, 4, 8, 16])
+        m.sync()
+        print(f"stage graphs captured in {time.perf_counter()-t0:.1f}s")
+        reqs2 = [Request(10 + i, p, SamplingParams(max_tokens=N,
+                                                   temperature=0.0,
+                                                   ignore_eos=True))
+                 for i, p in enumerate(PROMPTS)]
+        state.add(reqs2)
+        m.sync()
+        t0 = time.perf_counter()
+        while state.any_active:
+            fin = state.step()
+            if fin:
+                state.evict(fin)
+        m.sync()
+        dt = time.perf_counter() - t0
+    finally:
+        restore_attention(m.model, prev)
+    ok = True
+    for p, a, r in zip(PROMPTS, want, reqs2):
+        match = a == r.output_tokens
+        ok = ok and match
+        print(f"  {'exact' if match else 'DIVERGED'} (graphed): {p!r}")
+        if not match:
+            print(f"    hf      {a[:12]}")
+            print(f"    graphed {r.output_tokens[:12]}")
+    toks = sum(len(r.output_tokens) for r in reqs2) - len(reqs2)
+    print(f"decode: {toks} tokens in {dt:.2f}s = {toks/dt:.1f} tok/s "
+          f"(B={len(PROMPTS)}, stage graphs, sharded)")
+    if not ok:
+        raise SystemExit("stage-graph path diverged from hf generation")
+    print("stage graphs token-exact through the cut")
+
 
 if __name__ == "__main__":
     main()
