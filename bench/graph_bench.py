@@ -20,7 +20,7 @@ from server.model import ModelRunner
 from server.request import Request, SamplingParams
 
 
-def make_state(runner, B, ctx, graphs):
+def make_state(runner, B, ctx, graphs, num_blocks=8192):
     from server.paged_exec import PagedBatchState
     ids = runner.encode(
         "The quick brown fox jumps over the lazy dog and keeps running. " * 200
@@ -28,7 +28,7 @@ def make_state(runner, B, ctx, graphs):
     reqs = [Request(i, "", SamplingParams(max_tokens=512, temperature=0.0,
                                           ignore_eos=True),
                     prompt_ids=list(ids)) for i in range(B)]
-    state = PagedBatchState(runner, num_blocks=8192, block_size=16,
+    state = PagedBatchState(runner, num_blocks=num_blocks, block_size=16,
                             fused=True, graphs=graphs)
     state.add(reqs)
     return state
@@ -52,6 +52,7 @@ def main():
     p.add_argument("--device", default="cuda")
     p.add_argument("--batches", nargs="+", type=int, default=[1, 2, 4, 8, 16])
     p.add_argument("--ctxs", nargs="+", type=int, default=[128, 1024])
+    p.add_argument("--num-blocks", type=int, default=8192)
     p.add_argument("--out", default="results/graph_bench.json")
     a = p.parse_args()
 
@@ -65,10 +66,10 @@ def main():
         print(f"{'ctx':>5} {'B':>3} {'eager ms':>9} {'graph ms':>9} {'speedup':>8}")
         for ctx in a.ctxs:
             for B in a.batches:
-                se = make_state(m, B, ctx, graphs=False)
+                se = make_state(m, B, ctx, graphs=False, num_blocks=a.num_blocks)
                 ms_e = time_step(m, se)
                 del se
-                sg = make_state(m, B, ctx, graphs=True)
+                sg = make_state(m, B, ctx, graphs=True, num_blocks=a.num_blocks)
                 ms_g = time_step(m, sg)
                 del sg
                 torch.cuda.empty_cache()

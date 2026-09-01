@@ -260,6 +260,38 @@ def run_mode(mode):
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "scaleserve":
+        print(">>> mode: scaleserve (predict-then-measure across model scale)")
+        LOG = "results/kernel_ci_log.txt"
+        step("predictions (recompute, must match the committed file)",
+             ["bench.scale_serve_predict"], tee=LOG)
+        models = [("0.5B", "Qwen/Qwen2.5-0.5B", "8192"),
+                  ("1.5B", "Qwen/Qwen2.5-1.5B", "4096"),
+                  ("3B", "Qwen/Qwen2.5-3B", "3072")]
+        for tag, name, blocks in models:
+            if tag != "0.5B":   # 0.5B graph cells already measured (v15)
+                step(f"graph step times {tag}", [
+                    "bench.graph_bench", "--model", name, "--device", "cuda",
+                    "--batches", "1", "16", "--ctxs", "128", "1024",
+                    "--num-blocks", blocks,
+                    "--out", f"results/graph_bench_{tag}.json"],
+                    tee=LOG, timeout=1200)
+            step(f"ladder point {tag}: fused vs graph", [
+                "bench.sweep", "--model", name, "--engines",
+                "paged_fused", "paged_fused_graph", "--rates", "16",
+                "--n", "32", "--max-tokens", "48", "--device", "cuda",
+                "--out", f"results/sweep_{tag}.json"], tee=LOG, timeout=1200)
+        for tag, name, _ in models:   # vllm LAST: EngineCore lingers on memory
+            step(f"vllm ceiling {tag}", [
+                "bench.vllm_ref", "--model", name, "--n", "32", "--rate", "16",
+                "--max-tokens", "48",
+                "--out", f"results/vllm_{tag}.json"], tee=LOG, timeout=900)
+        step("verdicts: predictions vs measurement",
+             ["bench.scale_serve_compare"], tee=LOG)
+        os.makedirs("results", exist_ok=True)
+        with open("results/summary.txt", "w") as f:
+            f.write("scaleserve-mode run\n")
+        return
     if mode == "cppstorm":
         # just the c++-engine storm leg (the full sweep already ran)
         print(">>> mode: cppstorm (build extension, storm the c++ engine)")
