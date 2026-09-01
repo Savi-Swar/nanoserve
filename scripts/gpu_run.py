@@ -306,6 +306,13 @@ def run_mode(mode):
             "--engines", "paged_fused_graph", "--rates", "8", "16",
             "--n", "24", "--max-tokens", "48",
             "--out", "results/sweep_7B_graph.json"], tee=LOG, timeout=2400)
+        # decode-heavy workload: long outputs make decode dominate, which is
+        # the regime the stage graphs actually accelerate
+        step("7B decode-heavy: fused vs graphs", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "paged_fused", "paged_fused_graph", "--rates", "4",
+            "--n", "16", "--max-tokens", "192",
+            "--out", "results/sweep_7B_decodeheavy.json"], tee=LOG, timeout=2400)
         with open("results/summary.txt", "w") as f:
             f.write("pp-mode run\n")
         return
