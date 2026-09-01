@@ -70,7 +70,7 @@ def main():
                 he, cose, sine = spg._fwd0(Bp)
                 he, cose, sine = he.clone(), cose.clone(), sine.clone()
             m.sync()
-            spg.g0.replay()
+            spg.g0[Bp].replay()
             m.sync()
             hg, cosg, sing = spg.out0[Bp]
             print(f"stage0 hidden  max|eager-replay| = {mad(he, hg):.6f}")
@@ -85,7 +85,7 @@ def main():
             with torch.no_grad():
                 lg_e = spg._fwd1(Bp).clone()
             m.sync()
-            spg.g1.replay()
+            spg.g1[Bp].replay()
             m.sync()
             lg_g = spg.out1[Bp]
             print(f"stage1 logits  max|eager-replay| = {mad(lg_e, lg_g):.6f}")
@@ -93,7 +93,7 @@ def main():
             print(f"  replay argmax {lg_g[:B, -1].argmax(-1).tolist()}")
 
             # second replay with identical statics must be bit-identical
-            spg.g0.replay()
+            spg.g0[Bp].replay()
             m.sync()
             hg2 = spg.out0[Bp][0]
             print(f"stage0 replay-vs-replay          = {mad(hg, hg2):.6f}")
