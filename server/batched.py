@@ -175,8 +175,11 @@ class BatchState:
             return
         idx = torch.tensor(keep, device=self.m.device)
         for l in self.cache.layers:
-            l.keys = l.keys.index_select(0, idx)
-            l.values = l.values.index_select(0, idx)
+            # a pipeline-sharded model keeps each layer's cache on that
+            # layer's GPU; index on the tensor's own device
+            li = idx.to(l.keys.device)
+            l.keys = l.keys.index_select(0, li)
+            l.values = l.values.index_select(0, li)
         self.mask = self.mask.index_select(0, idx)
         self.true_len = self.true_len.index_select(0, idx)
         self.last_tok = self.last_tok.index_select(0, idx)

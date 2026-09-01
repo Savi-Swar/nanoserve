@@ -38,7 +38,7 @@ class Report:
     def to_dict(self, model: str = "", rate: float = 0.0, max_tokens: int = 0) -> dict:
         return {
             "engine": self.engine,
-            "device": self.device,
+            "device": str(self.device),
             "model": model,
             "rate": rate,
             "n": self.n,
