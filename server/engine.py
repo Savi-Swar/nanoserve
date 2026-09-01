@@ -51,7 +51,17 @@ class Engine:
             self._cancelled.add(req_id)
 
     def start(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        def _guarded():
+            try:
+                self._run()
+            except Exception:
+                # a worker that dies silently strands every queued request
+                # behind a timeout with no clue; make the crash loud
+                import traceback
+                print(f"[engine {self.name}] worker crashed:", flush=True)
+                traceback.print_exc()
+
+        self._thread = threading.Thread(target=_guarded, daemon=True)
         self._thread.start()
 
     def stop(self):

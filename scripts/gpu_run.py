@@ -43,7 +43,13 @@ def step(title, args, timeout=STEP_TIMEOUT, env=None, tee=None):
             print(r.stdout, end="")
             _log(r.stdout + (r.stderr or ""))
         return True
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        # the partial output is the only clue a hung step leaves; keep it
+        for chunk in (e.output, e.stderr):
+            if chunk:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                print(text, end="")
+                _log(text)
         print(f"[!] step timed out after {timeout}s, skipping")
         _log(f"[!] step timed out after {timeout}s\n")
         return False
@@ -265,11 +271,16 @@ def run_mode(mode):
         LOG = "results/kernel_ci_log.txt"
         os.makedirs("results", exist_ok=True)
         os.system(f"{PY} scripts/pp_check.py 2>&1 | tee -a {LOG}")
-        step("7B pipeline ladder: continuous vs paged_fused", [
+        step("7B pipeline ladder: continuous", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
-            "--engines", "continuous", "paged_fused", "--rates", "8",
+            "--engines", "continuous", "--rates", "8",
             "--n", "24", "--max-tokens", "48",
-            "--out", "results/sweep_7B_pp.json"], tee=LOG, timeout=1800)
+            "--out", "results/sweep_7B_cont.json"], tee=LOG, timeout=2400)
+        step("7B pipeline ladder: paged_fused", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "paged_fused", "--rates", "8",
+            "--n", "24", "--max-tokens", "48",
+            "--out", "results/sweep_7B_fused.json"], tee=LOG, timeout=2400)
         with open("results/summary.txt", "w") as f:
             f.write("pp-mode run\n")
         return
