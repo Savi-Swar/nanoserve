@@ -81,6 +81,13 @@ continuous sustains roughly 200x naive.
   5-run error bars [75%, 100%], 60% at 3B) because what remains at scale is
   kernel quality, not overhead.
 
+- A model bigger than the GPU: Qwen2.5-7B (15.2 GB fp16) does not fit one
+  T4, so the runner shards layers and their KV pools across two. The fused
+  paged path is token-exact through the cut against stock HF generation and
+  serves 113.5 tok/s under continuous batching, 7.8x the naive cross-GPU
+  baseline; the measured 36% GPU utilization is the pipeline bubble, which
+  interleaving has not yet attacked.
+
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).
 
