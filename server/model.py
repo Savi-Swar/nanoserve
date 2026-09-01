@@ -32,16 +32,36 @@ def pick_dtype(device: str) -> torch.dtype:
 
 class ModelRunner:
     def __init__(self, model_name: str, device: str | None = None, dtype=None):
-        self.device = pick_device(device)
-        self.dtype = dtype or pick_dtype(self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = (
-            AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=self.dtype)
-            .to(self.device)
-            .eval()
-        )
+        # device="pipeline" shards the model across every visible GPU with an
+        # accelerate device_map (for models bigger than one card). Inputs go
+        # to the embedding's device; accelerate's hooks move activations
+        # across the cut. self.device stays the input-side device so existing
+        # call sites keep working; layer_device() answers for the rest.
+        self.pipeline = device == "pipeline"
+        if self.pipeline:
+            self.dtype = dtype or torch.float16
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=self.dtype, device_map="balanced").eval()
+            self.device = next(self.model.get_input_embeddings().parameters()).device
+        else:
+            self.device = pick_device(device)
+            self.dtype = dtype or pick_dtype(self.device)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = (
+                AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=self.dtype)
+                .to(self.device)
+                .eval()
+            )
         self.eos_id = self.tokenizer.eos_token_id
         self.model_name = model_name
+
+    def layer_device(self, li: int):
+        """Device holding decoder layer li (the whole model's device when not
+        sharded)."""
+        if not self.pipeline:
+            return self.device
+        return next(self.model.model.layers[li].parameters()).device
 
     def encode(self, prompt: str) -> list[int]:
         return self.tokenizer(prompt, return_tensors=None)["input_ids"]
@@ -99,8 +119,9 @@ class ModelRunner:
 
     def sync(self):
         """Block until queued device work is done; required before timing."""
-        if self.device == "cuda":
-            torch.cuda.synchronize()
+        if self.pipeline or str(self.device).startswith("cuda"):
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(i)
         elif self.device == "mps":
             torch.mps.synchronize()
 

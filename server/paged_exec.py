@@ -46,10 +46,15 @@ class PagedKVStore:
         self.block_size = block_size
         self.num_blocks = num_blocks
         self.n_slots = num_blocks * block_size
-        dev, dt = model.device, model.dtype
+        dt = model.dtype
         shape = (num_blocks, block_size, self.n_kv, self.head_dim)
-        self.key = [torch.zeros(shape, device=dev, dtype=dt) for _ in range(self.n_layers)]
-        self.val = [torch.zeros(shape, device=dev, dtype=dt) for _ in range(self.n_layers)]
+        # each layer's pool lives where that layer's weights live, so a
+        # pipeline-sharded model writes and reads KV without cross-GPU hops
+        self.layer_dev = [model.layer_device(li) for li in range(self.n_layers)]
+        self.key = [torch.zeros(shape, device=self.layer_dev[li], dtype=dt)
+                    for li in range(self.n_layers)]
+        self.val = [torch.zeros(shape, device=self.layer_dev[li], dtype=dt)
+                    for li in range(self.n_layers)]
 
     def _flat(self, t):  # [num_blocks, block_size, n_kv, head_dim] -> [n_slots, n_kv, head_dim]
         return t.view(self.n_slots, self.n_kv, self.head_dim)
@@ -60,21 +65,35 @@ class PagedKVStore:
         tbl = torch.tensor(table, device=dev, dtype=torch.long)
         return tbl[pos // self.block_size] * self.block_size + (pos % self.block_size)
 
+    def _per_dev(self, t: torch.Tensor) -> dict:
+        """One copy of an index tensor per pool device (no-op single-GPU)."""
+        out = {}
+        for dev in self.layer_dev:
+            k = str(dev)
+            if k not in out:
+                out[k] = t.to(dev)
+        return out
+
     def write_range(self, table: list[int], start: int, k_layers, v_layers, length: int):
         """Write `length` contiguous tokens (k_layers[li]/v_layers[li] are
         [n_kv, length, head_dim]) starting at position `start`."""
-        dev = self.key[0].device
-        slots = self._slots(table, start, length, dev)
+        slots = self._per_dev(
+            self._slots(table, start, length, self.layer_dev[0]))
         for li in range(self.n_layers):
-            self._flat(self.key[li]).index_copy_(0, slots, k_layers[li].permute(1, 0, 2).contiguous())
-            self._flat(self.val[li]).index_copy_(0, slots, v_layers[li].permute(1, 0, 2).contiguous())
+            s = slots[str(self.layer_dev[li])]
+            k = k_layers[li].permute(1, 0, 2).to(s.device).contiguous()
+            v = v_layers[li].permute(1, 0, 2).to(s.device).contiguous()
+            self._flat(self.key[li]).index_copy_(0, s, k)
+            self._flat(self.val[li]).index_copy_(0, s, v)
 
     def write_tokens(self, slots: torch.Tensor, k_last, v_last):
         """Scatter one new token per row. k_last[li]/v_last[li] are
         [B, n_kv, head_dim]; slots is [B] (one linear slot per row)."""
+        by = self._per_dev(slots)
         for li in range(self.n_layers):
-            self._flat(self.key[li]).index_copy_(0, slots, k_last[li])
-            self._flat(self.val[li]).index_copy_(0, slots, v_last[li])
+            s = by[str(self.layer_dev[li])]
+            self._flat(self.key[li]).index_copy_(0, s, k_last[li].to(s.device))
+            self._flat(self.val[li]).index_copy_(0, s, v_last[li].to(s.device))
 
     def gather_batch(self, tables, lengths, T_max):
         """Left-padded KV for the whole batch. Returns (keys, values, mask)
@@ -88,9 +107,10 @@ class PagedKVStore:
             pad = T_max - L
             slot_idx[i, pad:] = self._slots(table, 0, L, dev)
             mask[i, pad:] = 1
-        flat_idx = slot_idx.reshape(-1)
+        flat_by = self._per_dev(slot_idx.reshape(-1))
         keys, vals = [], []
         for li in range(self.n_layers):
+            flat_idx = flat_by[str(self.layer_dev[li])]
             k = self._flat(self.key[li]).index_select(0, flat_idx)
             v = self._flat(self.val[li]).index_select(0, flat_idx)
             keys.append(k.view(B, T_max, self.n_kv, self.head_dim).permute(0, 2, 1, 3).contiguous())
@@ -156,7 +176,8 @@ class PagedBatchState:
         # blocks the state holds for itself (graph mode's scratch block);
         # accounting checks should expect num_free == num_blocks - this
         self.reserved_blocks = 0
-        if graphs and fused and str(model.device).startswith("cuda"):
+        if graphs and fused and not getattr(model, "pipeline", False) \
+                and str(model.device).startswith("cuda"):
             from .kernels.graph_step import GraphedDecode
             self.alloc.add_seq(-7, 1)      # scratch block for pad rows
             self.reserved_blocks = 1

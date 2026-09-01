@@ -121,6 +121,13 @@ def decode_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     q's dtype. H must be a multiple of H_kv (GQA)."""
     if not HAS_TRITON:
         raise RuntimeError("triton is not available on this machine")
+    # pipeline sharding: launch on the tensor's own GPU, not whatever device
+    # happens to be current on this thread
+    if q.device.type == "cuda" and q.device.index is not None \
+            and q.device.index != torch.cuda.current_device():
+        with torch.cuda.device(q.device):
+            return decode_attention(q, k, v, mask_add, scale, block_l,
+                                    num_warps, num_splits)
     B, H, D = q.shape
     Hkv, T = k.shape[1], k.shape[2]
     assert H % Hkv == 0, "H must be a multiple of H_kv"
@@ -253,6 +260,12 @@ def paged_decode_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.
     the first ceil(len/bs) entries of each row are read); lens [B] int true
     lengths. BLOCK_L must be a multiple of block_size so a tile never
     straddles a partial block boundary mid-token."""
+    if q.device.type == "cuda" and q.device.index is not None \
+            and q.device.index != torch.cuda.current_device():
+        with torch.cuda.device(q.device):
+            return paged_decode_attention(q, k_pool, v_pool, block_tables,
+                                          lens, block_size, scale, block_l,
+                                          num_warps, num_splits, max_len)
     if not HAS_TRITON:
         raise RuntimeError("triton is not available on this machine")
     B, H, D = q.shape

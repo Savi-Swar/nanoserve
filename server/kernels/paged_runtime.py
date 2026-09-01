@@ -92,17 +92,28 @@ class NanoPagedCache(DynamicCache):
         self._lens = lens              # true lengths BEFORE this step's token
         self._slots = slots            # where each row's new token lands
         self._bs = block_size
+        # pipeline sharding: index tensors mirrored onto each pool device on
+        # first touch (no-op copies when everything is one GPU)
+        self._mirrors: dict = {}
         # caller usually knows max(lens) already; computing it here would sync
         self._max_len = max_len if max_len is not None else (
             int(lens.max()) if lens.numel() else 0)
+
+    def _on(self, dev):
+        k = str(dev)
+        if k not in self._mirrors:
+            self._mirrors[k] = (self._tables.to(dev), self._lens.to(dev),
+                                self._slots.to(dev))
+        return self._mirrors[k]
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
         # key_states/value_states: [B, H_kv, 1, D], rope already applied
         kf = self._store._flat(self._store.key[layer_idx])
         vf = self._store._flat(self._store.val[layer_idx])
-        kf.index_copy_(0, self._slots, key_states[:, :, 0, :])
-        vf.index_copy_(0, self._slots, value_states[:, :, 0, :])
-        handle = PagedKV(kf, vf, self._tables, self._lens + 1, self._bs,
+        tables, lens, slots = self._on(kf.device)
+        kf.index_copy_(0, slots, key_states[:, :, 0, :])
+        vf.index_copy_(0, slots, value_states[:, :, 0, :])
+        handle = PagedKV(kf, vf, tables, lens + 1, self._bs,
                          self._max_len + 1)
         return handle, handle
 

@@ -260,6 +260,19 @@ def run_mode(mode):
         with open("results/summary.txt", "w") as f:
             f.write("tune-mode run\n")
         return
+    if mode == "pp":
+        print(">>> mode: pp (7B across two T4s: exactness, then serving)")
+        LOG = "results/kernel_ci_log.txt"
+        os.makedirs("results", exist_ok=True)
+        os.system(f"{PY} scripts/pp_check.py 2>&1 | tee -a {LOG}")
+        step("7B pipeline ladder: continuous vs paged_fused", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "continuous", "paged_fused", "--rates", "8",
+            "--n", "24", "--max-tokens", "48",
+            "--out", "results/sweep_7B_pp.json"], tee=LOG, timeout=1800)
+        with open("results/summary.txt", "w") as f:
+            f.write("pp-mode run\n")
+        return
     if mode == "pp_probe":
         print(">>> mode: pp_probe (does 7B fit across 2x T4, and how)")
         os.makedirs("results", exist_ok=True)
