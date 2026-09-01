@@ -462,8 +462,12 @@ class InterleavedPagedEngine(Engine):
         self._attn_model = model.model
         self._prev_attn = use_triton_attention(model.model)
         warm_decode_kernels(model.model, block_size=block_size)
-        half = max(1, max_batch // 2)
-        self._half = half
+        # each half-batch gets the FULL max_batch, doubling in-flight work.
+        # Decode is weight-bandwidth-bound: interleaving the same total work
+        # fills the bubble but not the throughput (each GPU still streams the
+        # same bytes per emitted token); two full batches at independent
+        # steps let each GPU emit max_batch tokens per half-weight read.
+        self._half = max_batch
         self.states = [PagedBatchState(model, num_blocks=num_blocks // 2,
                                        block_size=block_size, fused=True)
                        for _ in range(2)]
