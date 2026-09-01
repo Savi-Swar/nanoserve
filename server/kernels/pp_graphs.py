@@ -106,11 +106,45 @@ class StagePipelineGraphs:
 
         prev_force = pat.FORCE_NUM_SPLITS
         pat.FORCE_NUM_SPLITS = 1
+        saved_hooks = self._strip_hooks()
         try:
             for Bp in self.buckets:
                 self._capture(Bp)
         finally:
             pat.FORCE_NUM_SPLITS = prev_force
+            self._restore_hooks(saved_hooks)
+
+    def _stage_modules(self):
+        return [self.embed, self.rotary, self.norm, self.head,
+                *self.layers0, *self.layers1]
+
+    def _strip_hooks(self):
+        """accelerate's device hooks poison capture: their send_to_device
+        creates a dependency on uncaptured work even for same-device inputs
+        (cudaErrorStreamCaptureIsolation). The stage forwards manage devices
+        explicitly and a replay never runs hooks, so detach them for the
+        captures and put them back for the eager paths (prefill, fallback,
+        the hf-generate exactness check)."""
+        try:
+            from accelerate.hooks import remove_hook_from_module
+        except ImportError:
+            return []
+        saved = []
+        for root in self._stage_modules():
+            for m in root.modules():
+                hook = getattr(m, "_hf_hook", None)
+                if hook is not None:
+                    saved.append((m, hook))
+                    remove_hook_from_module(m)
+        return saved
+
+    @staticmethod
+    def _restore_hooks(saved):
+        if not saved:
+            return
+        from accelerate.hooks import add_hook_to_module
+        for m, hook in saved:
+            add_hook_to_module(m, hook)
 
     # --- capture-time forwards (python here, never at serve time) --------
     def _slots_of(self, s, Bp):
