@@ -550,7 +550,26 @@ class InterleavedPagedEngine(Engine):
                 # the GPU stage). With two threads, each half's python runs
                 # during the other half's GPU time; the GIL drops inside
                 # every kernel launch and cross-device copy.
-                if len(live) > 1 and self._threaded:
+                ctxs = None
+                if len(live) > 1 and not self._threaded:
+                    ctxs = [st.graph_fill() for st in live]
+                    if any(c is None for c in ctxs):
+                        ctxs = None
+                if ctxs is not None:
+                    # phased round: every host-side fill for every half
+                    # happens before any replay, then stage0 replays for
+                    # all halves, then handoff+stage1 per half. No staged
+                    # host-blocking copy lands between one half's stage0
+                    # and the next half's, so cross-device overlap is
+                    # limited only by what the probe measured the host
+                    # can do.
+                    for (g, Bp, _B) in ctxs:
+                        g.replay0(Bp)
+                    logits = []
+                    for (g, Bp, _B) in ctxs:
+                        g.handoff(Bp)
+                        logits.append(g.replay1(Bp, _B)[:, -1, :])
+                elif len(live) > 1 and self._threaded:
                     futs = [self._pool_exec.submit(st.forward_async)
                             for st in live]
                     logits = [f.result() for f in futs]

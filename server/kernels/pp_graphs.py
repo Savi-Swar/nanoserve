@@ -279,6 +279,38 @@ class StagePipelineGraphs:
         return None
 
     @torch.no_grad()
+    def fill(self, B: int, tok, pos, tables, lens):
+        """Host-side half of a step: statics and rotary for both stages,
+        no replays. The interleaved engine fills BOTH halves first, then
+        chains the replays, so no staged host-blocking copy ever lands
+        between one half's stage0 and the other's."""
+        Bp = self.bucket_for(B)
+        w = tables.shape[1]
+        for s in (self.s0, self.s1):
+            s["tok"][:B].copy_(tok)
+            s["pos"][:B].copy_(pos)
+            s["tables"][:B, :w].copy_(tables)
+            s["lens"][:B].copy_(lens)
+            if Bp > B:
+                s["lens"][B:Bp].fill_(1)
+        cos, sin = self.rotary(self._rope_x.expand(B, 1), pos.to(self.d0))
+        self.cos0[:B].copy_(cos.to(self.dt))
+        self.sin0[:B].copy_(sin.to(self.dt))
+        self.cos1[:Bp].copy_(self.cos0[:Bp])
+        self.sin1[:Bp].copy_(self.sin0[:Bp])
+        return Bp
+
+    def replay0(self, Bp: int):
+        self.g0[Bp].replay()
+
+    def handoff(self, Bp: int):
+        self.hid1[:Bp].copy_(self.out0[Bp])
+
+    def replay1(self, Bp: int, B: int) -> torch.Tensor:
+        self.g1[Bp].replay()
+        return self.out1[Bp][:B]
+
+    @torch.no_grad()
     def step(self, B: int, tok, pos, tables, lens) -> torch.Tensor:
         Bp = self.bucket_for(B)
         w = tables.shape[1]

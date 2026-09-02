@@ -385,6 +385,33 @@ class PagedBatchState:
         return out.logits[:, -1, :]
 
     @torch.no_grad()
+    def graph_fill(self):
+        """Phase one of a stage-graph step for the interleaved engine: all
+        host-side prep and static fills, no replays. Returns (graphs, Bp, B)
+        for the engine to chain replays across states, or None when the
+        graphed path does not apply (the caller falls back to
+        forward_async)."""
+        g = self._graphed
+        if g is None or not hasattr(g, "fill"):
+            return None
+        dev = self.m.device
+        B = self.size
+        bs = self.block_size
+        T_max = max(self.true_len)
+        if self._tables_t is None:
+            self._rebuild_fused()
+        tables_t, lens_t = self._tables_t, self._lens_t
+        if not (g.bucket_for(B) is not None and tables_t.shape[1] <= g.cap
+                and T_max + 1 < g.cap * bs):
+            return None
+        last = self._last_to_dev(B, dev)
+        Bp = g.fill(B, last, lens_t.unsqueeze(1), tables_t, lens_t)
+        lens_t += 1
+        for i in range(B):
+            self.true_len[i] += 1
+        return (g, Bp, B)
+
+    @torch.no_grad()
     def finish_async(self, logits: torch.Tensor) -> list[int]:
         """Sample and retire for a forward_async() issued earlier."""
         return self._finish_step(logits)
