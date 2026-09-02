@@ -86,10 +86,49 @@ a few hundred tokens per second, and sixteen of those cost about as much
 as all the decoding put together. The graphs' fingerprint shows exactly
 where prefill does not mask it: decode-heavy TTFT p99 fell 1101 -> 204 ms.
 
-So the chapter ends the way the whole project keeps ending: fix the
-bottleneck, measure, and meet the next one. Attention, then launch
-overhead, then the python issue cost, now prefill. Chunked or
-direct-stage prefill is the named next wall.
+Prefill was then acquitted by measurement (0.14 s stock vs 0.15 s
+direct-stage for three prompts; the estimate that indicted it was an order
+of magnitude off), and instrumenting the serving loop found the truth: the
+graphed step's issue costs 2.6 ms and the 68 ms finish is the GPUs doing
+the serial weight reads. That IS the floor for stages that take turns:
+7.6 GB per stage at the T4's effective bandwidth is ~32 ms, twice over.
+The graphs took the step to the hardware floor.
+
+## The interleave rematch, and the substrate's verdict
+
+With issue at 2.6 ms, the interleave that died on 52 ms of python got its
+rematch: two graphed half-batches, replays chained so one half's stage0
+overlaps the other's stage1. Five rounds of measurement later, every
+software obstacle was found and removed, and the answer is still no:
+
+- the second half's token upload host-blocked 27.7 ms (a pageable
+  host-to-device copy waits in stream order behind the other half's
+  replay); fixed with a pinned staging buffer, issue fell to 1.5 ms.
+- 12 to 16 live requests meant splitting one batch and paying four weight
+  reads for the same tokens, which weight-bound decode can never win; the
+  benches now offer 32, two full batches in flight.
+- the statics fills were reordered so nothing host-blocking sits between
+  any two replays (fill everything, then chain the replays).
+
+Still parity: 174 vs 177 tok/s at depth 32. So the substrate itself went
+under the probe: raw kernels on the two T4s overlap 1.91x from one
+thread, bare graph replays 1.71x, but pipeline-shaped chains with the
+cross-device copy in the middle manage only 1.21x, and peer-to-peer
+access is disabled (every copy stages through the host). The honest
+ceiling for this engine's shape on this host was ~1.2x, and the ~15 ms of
+per-round python that two half-batches double (fills, rotary, sampling)
+eats approximately that window. Not every optimization survives contact
+with the hardware it runs on; this one leaves with the probe that proves
+why.
+
+What the interleave IS worth, measured twice: admission depth. Under a
+32-request overload the serial engine's TTFT p99 is 15.3 s; the
+interleaved one's is 2.34 s at 6 percent less throughput. A latency
+feature, exactly as the first attempt hinted.
+
+The 7B result stands as: 174-180 tok/s at depth 32 through the stage
+graphs, 12x the naive cross-GPU baseline, token-exact, at the measured
+serial-stage hardware floor.
 
 A note on why not tensor parallelism: the T4 pair is PCIe-only, and TP
 needs an all-reduce every layer. Pipeline parallelism crosses the

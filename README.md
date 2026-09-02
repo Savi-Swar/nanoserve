@@ -89,10 +89,16 @@ continuous sustains roughly 200x naive.
   python-issue-bound on this host, so no issue order or thread can overlap
   it) and hands interleaving a consolation prize: TTFT p99 falls 3.5s to
   0.54s from the doubled admission capacity. Per-stage CUDA graphs then cut
-  the decode step 73 to 23 ms (3.2x, token-exact, four capture bugs deep,
-  including positions constant-folded by a compiled wrapper), and serving
-  still barely moved: at 7B the wall clock belongs to eager prefill, the
-  fourth bottleneck in the chain ([docs/pp.md](docs/pp.md)).
+  the decode step to the measured hardware floor for serial stages (~66 ms
+  of weight reads), worth 174-180 tok/s at depth 32, 12x naive, token-exact
+  and four capture bugs deep (including positions constant-folded by a
+  compiled wrapper). The graph-plus-interleave rematch removed every
+  software obstacle it found (a 27.7 ms pinned-memory stall among them) and
+  still measured parity; the substrate probe explains it: this host
+  overlaps raw kernels 1.91x but pipeline chains only 1.21x with
+  peer-to-peer disabled, and that window goes to per-round python. The
+  interleave's real value, measured twice: TTFT p99 15.3 s to 2.34 s under
+  overload ([docs/pp.md](docs/pp.md)).
 
 Method, tables, and the numbers that didn't hold up are in
 [docs/writeup.md](docs/writeup.md).
