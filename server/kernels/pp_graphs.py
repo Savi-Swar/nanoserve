@@ -31,12 +31,12 @@ from . import paged_attention_triton as pat
 from .paged_runtime import NanoPagedCache
 
 
-def _layer_call(layer, h, pos, cache, cpos, cos_sin):
+def _layer_call(layer, h, pos, cache, cpos, cos_sin, mask=None):
     # transformers has renamed the cache kwarg across 5.x minors; resolve
     # against the layer's real signature so the cache is never silently
     # dropped (capture-time python only, costs nothing at serve time)
     params = inspect.signature(type(layer).forward).parameters
-    kw = {"attention_mask": None, "position_ids": pos, "use_cache": True,
+    kw = {"attention_mask": mask, "position_ids": pos, "use_cache": True,
           "cache_position": cpos, "position_embeddings": cos_sin}
     kw = {k: v for k, v in kw.items() if k in params
           or any(p.kind == p.VAR_KEYWORD for p in params.values())}
@@ -235,6 +235,41 @@ class StagePipelineGraphs:
                 if pool is None:
                     setattr(self, pool_attr, g.pool())
                 graphs[Bp] = g
+
+    # --- direct-stage prefill (eager, hook-free) --------------------------
+    @torch.no_grad()
+    def prefill(self, input_ids, mask_add, pos):
+        """Run a padded prompt batch through the stages directly: no hooks,
+        no dynamo wrapper, no mask builder, and lm_head over the LAST
+        position only (the stock path pays the full-vocab matmul at every
+        prompt position). Returns (last-position logits, a DynamicCache
+        whose per-layer K/V the caller scatters into the pool exactly as it
+        did for the stock prefill). This is the fifth bottleneck's fix: at
+        7B the hooked eager prefill cost as much as all decoding."""
+        from transformers import DynamicCache
+        saved = self._strip_hooks()
+        try:
+            L = input_ids.shape[1]
+            ids0 = input_ids.to(self.d0)
+            pos0 = pos.to(self.d0)
+            h = self.embed(ids0)
+            cos, sin = self.rotary(h, pos0)
+            cache = DynamicCache()
+            m0 = mask_add.to(self.d0)
+            cp0 = torch.arange(L, device=self.d0)
+            for layer in self.layers0:
+                h = _layer_call(layer, h, pos0, cache, cp0, (cos, sin), m0)
+            h = h.to(self.d1)
+            cs1 = (cos.to(self.d1), sin.to(self.d1))
+            m1 = mask_add.to(self.d1)
+            pos1 = pos.to(self.d1)
+            cp1 = cp0.to(self.d1)
+            for layer in self.layers1:
+                h = _layer_call(layer, h, pos1, cache, cp1, cs1, m1)
+            logits = self.head(self.norm(h[:, -1:]))
+            return logits[:, -1, :], cache
+        finally:
+            self._restore_hooks(saved)
 
     # --- the GraphedDecode contract --------------------------------------
     def bucket_for(self, B: int) -> int | None:

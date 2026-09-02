@@ -54,8 +54,10 @@ def main():
         reqs = [Request(i, p, SamplingParams(max_tokens=N, temperature=0.0,
                                              ignore_eos=True))
                 for i, p in enumerate(PROMPTS)]
+        t0 = time.perf_counter()
         state.add(reqs)
         m.sync()
+        print(f"prefill (stock hooked path): {time.perf_counter()-t0:.2f}s for {len(PROMPTS)} prompts")
         t0 = time.perf_counter()
         steps = 0
         while state.any_active:
@@ -95,8 +97,11 @@ def main():
                                                    temperature=0.0,
                                                    ignore_eos=True))
                  for i, p in enumerate(PROMPTS)]
+        tp = time.perf_counter()
         state.add(reqs2)
         m.sync()
+        print(f"prefill (direct-stage path): {time.perf_counter()-tp:.2f}s "
+              f"for {len(PROMPTS)} prompts")
         t0 = time.perf_counter()
         while state.any_active:
             fin = state.step()

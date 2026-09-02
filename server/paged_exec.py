@@ -259,15 +259,30 @@ class PagedBatchState:
             input_ids.append([pad_id] * padn + ids)
             gmask.append([0] * padn + [1] * len(ids))
             gpos.append([0] * padn + list(range(len(ids))))
-        out = self.m.model(
-            input_ids=torch.tensor(input_ids, device=dev),
-            attention_mask=torch.tensor(gmask, device=dev),
-            position_ids=torch.tensor(gpos, device=dev),
-            past_key_values=DynamicCache(),
-            use_cache=True,
-        )
-        gcache = out.past_key_values
-        first = _sample_batch(out.logits[:, -1, :], reqs)
+        if self._graphed is not None and hasattr(self._graphed, "prefill"):
+            # direct-stage prefill: hook-free layer calls, last-position
+            # lm_head only. Same padded batch, same additive semantics the
+            # stock path would build (causal, pad keys masked for everyone).
+            km = torch.tensor(gmask, device=dev, dtype=torch.bool)
+            q = torch.arange(Lp, device=dev)
+            allow = (q[None, :] <= q[:, None])[None, :, :] & km[:, None, :]
+            neg = torch.finfo(self.m.dtype).min
+            mask_add = torch.where(
+                allow, 0.0, neg).to(self.m.dtype)[:, None, :, :]
+            last_logits, gcache = self._graphed.prefill(
+                torch.tensor(input_ids, device=dev), mask_add,
+                torch.tensor(gpos, device=dev))
+            first = _sample_batch(last_logits, reqs)
+        else:
+            out = self.m.model(
+                input_ids=torch.tensor(input_ids, device=dev),
+                attention_mask=torch.tensor(gmask, device=dev),
+                position_ids=torch.tensor(gpos, device=dev),
+                past_key_values=DynamicCache(),
+                use_cache=True,
+            )
+            gcache = out.past_key_values
+            first = _sample_batch(out.logits[:, -1, :], reqs)
 
         self.m.sync()
         t = time.perf_counter()
