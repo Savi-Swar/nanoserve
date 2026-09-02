@@ -454,7 +454,7 @@ class InterleavedPagedEngine(Engine):
 
     def __init__(self, model, on_finish=None, on_token=None, on_event=None,
                  max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16,
-                 threaded: bool = False):
+                 threaded: bool = False, graphs: bool = False):
         super().__init__(model, on_finish, on_token, on_event)
         from .kernels.paged_attention_triton import (use_triton_attention,
                                                      warm_decode_kernels)
@@ -470,7 +470,8 @@ class InterleavedPagedEngine(Engine):
         # steps let each GPU emit max_batch tokens per half-weight read.
         self._half = max_batch
         self.states = [PagedBatchState(model, num_blocks=num_blocks // 2,
-                                       block_size=block_size, fused=True)
+                                       block_size=block_size, fused=True,
+                                       graphs=graphs)
                        for _ in range(2)]
         self.state = self.states[0]   # cancel-path/tests poke .state
         self._threaded = threaded
@@ -621,6 +622,24 @@ class ContinuousFusedEngine(ContinuousBatchEngine):
         restore_attention(self._attn_model, self._prev_attn)
 
 
+class GraphInterleavedEngine(InterleavedPagedEngine):
+    """The interleave, now that it can work. The first attempt failed
+    because the sharded step was 52 ms of python issue; the stage graphs cut
+    issue to under 3 ms (measured 2.6), so issuing two graphed half-batches
+    back to back finally overlaps stage0 of one with stage1 of the other,
+    and both GPUs stream their weight halves concurrently instead of taking
+    turns. The serial step floor is ~66 ms of weight reads; this targets
+    half of it."""
+
+    name = "paged_fused_pp2g"
+
+    def __init__(self, model, on_finish=None, on_token=None, on_event=None,
+                 max_batch: int = 16, num_blocks: int = 4096, block_size: int = 16):
+        super().__init__(model, on_finish, on_token, on_event,
+                         max_batch=max_batch, num_blocks=num_blocks,
+                         block_size=block_size, graphs=True)
+
+
 ENGINES = {
     NaiveEngine.name: NaiveEngine,
     StaticBatchEngine.name: StaticBatchEngine,
@@ -631,6 +650,7 @@ ENGINES = {
     CppPagedEngine.name: CppPagedEngine,
     GraphPagedEngine.name: GraphPagedEngine,
     InterleavedPagedEngine.name: InterleavedPagedEngine,
+    GraphInterleavedEngine.name: GraphInterleavedEngine,
     ThreadedInterleavedEngine.name: ThreadedInterleavedEngine,
 }
 # SpeculativeEngine registers itself into ENGINES on import (see server/__init__)

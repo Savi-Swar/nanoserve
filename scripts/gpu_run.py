@@ -308,11 +308,16 @@ def run_mode(mode):
             "--out", "results/sweep_7B_graph.json"], tee=LOG, timeout=2400)
         # decode-heavy workload: long outputs make decode dominate, which is
         # the regime the stage graphs actually accelerate
-        step("7B decode-heavy: fused vs graphs", [
+        step("7B decode-heavy: fused vs graphs vs graphed-interleave", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
-            "--engines", "paged_fused", "paged_fused_graph", "--rates", "4",
+            "--engines", "paged_fused_graph", "paged_fused_pp2g", "--rates", "4",
             "--n", "16", "--max-tokens", "192",
             "--out", "results/sweep_7B_decodeheavy.json"], tee=LOG, timeout=2400)
+        step("7B short-output: graphed-interleave", [
+            "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
+            "--engines", "paged_fused_pp2g", "--rates", "8", "16",
+            "--n", "24", "--max-tokens", "48",
+            "--out", "results/sweep_7B_pp2g.json"], tee=LOG, timeout=2400)
         with open("results/summary.txt", "w") as f:
             f.write("pp-mode run\n")
         return
