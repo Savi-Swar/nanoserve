@@ -309,10 +309,12 @@ def run_mode(mode):
             "--out", "results/sweep_7B_graph.json"], tee=LOG, timeout=2400)
         # decode-heavy workload: long outputs make decode dominate, which is
         # the regime the stage graphs actually accelerate
-        step("7B decode-heavy: fused vs graphs vs graphed-interleave", [
+        # 32 concurrent requests: the interleave only pays when in-flight
+        # work doubles (two full batches), not when one batch is split
+        step("7B decode-heavy x32: graphs vs graphed-interleave", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",
-            "--engines", "paged_fused_graph", "paged_fused_pp2g", "--rates", "4",
-            "--n", "16", "--max-tokens", "192",
+            "--engines", "paged_fused_graph", "paged_fused_pp2g", "--rates", "16",
+            "--n", "32", "--max-tokens", "128",
             "--out", "results/sweep_7B_decodeheavy.json"], tee=LOG, timeout=2400)
         step("7B short-output: graphed-interleave", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",

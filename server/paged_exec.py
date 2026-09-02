@@ -319,6 +319,24 @@ class PagedBatchState:
     def _step_fused(self) -> list[int]:
         return self._finish_step(self.forward_async())
 
+    def _last_to_dev(self, B, dev):
+        """The step's token upload, through a pinned staging buffer. A
+        pageable host-to-device copy blocks the HOST until it completes in
+        stream order, so when the target device is mid-replay for another
+        half-batch, a plain torch.tensor(..., device=dev) stalls the issuing
+        thread for the whole replay (measured 27.7 ms in the interleaved
+        engine). Pinned memory plus non_blocking makes the upload truly
+        asynchronous."""
+        if str(dev).startswith("cuda"):
+            pin = getattr(self, "_last_pin", None)
+            if pin is None or pin.shape[0] < B:
+                pin = torch.empty(max(B, 16), 1, dtype=torch.long,
+                                  pin_memory=True)
+                self._last_pin = pin
+            pin[:B, 0] = torch.tensor(self.last_tok, dtype=torch.long)
+            return pin[:B].to(dev, non_blocking=True)
+        return torch.tensor(self.last_tok, device=dev).unsqueeze(1)
+
     @torch.no_grad()
     def forward_async(self) -> torch.Tensor:
         """Issue the fused decode forward and return this step's last-token
@@ -340,7 +358,7 @@ class PagedBatchState:
         g = self._graphed
         if (g is not None and g.bucket_for(B) is not None
                 and tables_t.shape[1] <= g.cap and T_max + 1 < g.cap * bs):
-            last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
+            last = self._last_to_dev(B, dev)
             logits = g.step(B, last, lens_t.unsqueeze(1), tables_t, lens_t)
             lens_t += 1
             for i in range(B):
@@ -352,7 +370,7 @@ class PagedBatchState:
         slots = blk * bs + lens_t % bs
 
         cache = NanoPagedCache(self.store, tables_t, lens_t, slots, bs, max_len=T_max)
-        last = torch.tensor(self.last_tok, device=dev).unsqueeze(1)
+        last = self._last_to_dev(B, dev)
         pos = lens_t.unsqueeze(1)
         out = self.m.model(
             input_ids=last,

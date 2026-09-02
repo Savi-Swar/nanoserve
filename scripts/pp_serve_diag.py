@@ -23,7 +23,7 @@ from server.engine import ENGINES  # noqa: E402
 from server.request import Request, SamplingParams  # noqa: E402
 
 MODEL = "Qwen/Qwen2.5-7B"
-N = 12
+N = 32
 MT = 64
 
 
