@@ -288,7 +288,8 @@ def run_mode(mode):
         print(">>> mode: pp (7B across two T4s: exactness, then serving)")
         LOG = "results/kernel_ci_log.txt"
         os.makedirs("results", exist_ok=True)
-        os.system(f"{PY} scripts/pp_serve_diag.py 2>&1 | tee -a {LOG}")
+        os.system(f"{PY} scripts/pp_serve_diag.py paged_fused_graph 2>&1 | tee -a {LOG}")
+        os.system(f"{PY} scripts/pp_serve_diag.py paged_fused_pp2g 2>&1 | tee -a {LOG}")
         os.system(f"{PY} scripts/pp_check.py 2>&1 | tee -a {LOG}")
         step("7B pipeline ladder: continuous", [
             "bench.sweep", "--model", "Qwen/Qwen2.5-7B", "--device", "pipeline",

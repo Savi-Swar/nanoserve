@@ -39,44 +39,47 @@ def main():
         if left[0] == 0:
             done.set()
 
-    eng = ENGINES["paged_fused_graph"](m, on_finish=fin, max_batch=16,
-                                       num_blocks=2048)
-    st = eng.state
+    engine_name = sys.argv[1] if len(sys.argv) > 1 else "paged_fused_graph"
+    eng = ENGINES[engine_name](m, on_finish=fin, max_batch=16,
+                               num_blocks=2048)
+    states = list(getattr(eng, "states", [])) or [eng.state]
 
     fwd_times, fin_times, add_times, sizes = [], [], [], []
+    per_state = {i: {"fwd": [], "fin": []} for i in range(len(states))}
     graph_hits = [0]
 
-    g = st._graphed
-    if g is not None:
-        orig_gstep = g.step
+    for i, st in enumerate(states):
+        g = st._graphed
+        if g is not None:
+            def counted(*a, __orig=g.step, **k):
+                graph_hits[0] += 1
+                return __orig(*a, **k)
+            g.step = counted
 
-        def counted(*a, **k):
-            graph_hits[0] += 1
-            return orig_gstep(*a, **k)
-        g.step = counted
+        def timed_fwd(__orig=st.forward_async, __st=st, __i=i):
+            t0 = time.perf_counter()
+            r = __orig()
+            dt = time.perf_counter() - t0
+            fwd_times.append(dt)
+            per_state[__i]["fwd"].append(dt)
+            sizes.append(__st.size)
+            return r
 
-    orig_fwd, orig_fin, orig_add = st.forward_async, st._finish_step, st.add
+        def timed_fin(logits, __orig=st._finish_step, __i=i):
+            t0 = time.perf_counter()
+            r = __orig(logits)
+            dt = time.perf_counter() - t0
+            fin_times.append(dt)
+            per_state[__i]["fin"].append(dt)
+            return r
 
-    def timed_fwd():
-        t0 = time.perf_counter()
-        r = orig_fwd()
-        fwd_times.append(time.perf_counter() - t0)
-        sizes.append(st.size)
-        return r
+        def timed_add(reqs, __orig=st.add):
+            t0 = time.perf_counter()
+            r = __orig(reqs)
+            add_times.append(time.perf_counter() - t0)
+            return r
 
-    def timed_fin(logits):
-        t0 = time.perf_counter()
-        r = orig_fin(logits)
-        fin_times.append(time.perf_counter() - t0)
-        return r
-
-    def timed_add(reqs):
-        t0 = time.perf_counter()
-        r = orig_add(reqs)
-        add_times.append(time.perf_counter() - t0)
-        return r
-
-    st.forward_async, st._finish_step, st.add = timed_fwd, timed_fin, timed_add
+        st.forward_async, st._finish_step, st.add = timed_fwd, timed_fin, timed_add
 
     eng.start()
     t0 = time.perf_counter()
@@ -101,9 +104,15 @@ def main():
               f"p90={xs_ms[int(0.9 * len(xs_ms)) - 1]:.1f}ms "
               f"max={xs_ms[-1]:.1f}ms total={sum(xs_ms) / 1e3:.2f}s")
 
-    print(f"wall {wall:.2f}s, {toks} tokens = {toks / wall:.1f} tok/s, "
-          f"{steps} decode steps, mean batch "
+    print(f"[{engine_name}] wall {wall:.2f}s, {toks} tokens = "
+          f"{toks / wall:.1f} tok/s, {steps} decode steps, mean batch "
           f"{sum(sizes) / max(1, len(sizes)):.1f}")
+    for i, d in per_state.items():
+        if d["fwd"]:
+            import statistics as _st
+            print(f"  state{i}: fwd p50 "
+                  f"{_st.median(d['fwd']) * 1e3:.1f}ms  fin p50 "
+                  f"{_st.median(d['fin']) * 1e3:.1f}ms  n={len(d['fwd'])}")
     print(f"graphed-branch hits: {graph_hits[0]} of {steps} steps")
     rep("forward_async", fwd_times)
     rep("finish_step  ", fin_times)
